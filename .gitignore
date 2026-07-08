@@ -1,3 +1,6 @@
 bin/
 llm-gateway.patch
 .code-review-graph/
+.kazi/
+.mcp.json
+kazi/
