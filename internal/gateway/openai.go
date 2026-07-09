@@ -6,13 +6,39 @@ import (
 )
 
 type OpenAIMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content"`
+	ToolCallID string      `json:"tool_call_id"`
+	ToolCalls  []ToolCall  `json:"tool_calls"`
+}
+
+type ToolCall struct {
+	ID       string                 `json:"id"`
+	Type     string                 `json:"type"`
+	Function ToolCallFunction       `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ToolSchema struct {
+	Type     string                 `json:"type"`
+	Function ToolFunctionSchema     `json:"function"`
+}
+
+type ToolFunctionSchema struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"`
 }
 
 type ChatCompletionRequest struct {
 	Model             string           `json:"model"`
 	Messages          []OpenAIMessage  `json:"messages"`
+	Tools             []ToolSchema     `json:"tools"`
+	ToolChoice        interface{}      `json:"tool_choice"`
 	Stream            bool             `json:"stream"`
 	ReasoningEffort   string           `json:"reasoning_effort"`
 	Temperature       float64          `json:"temperature"`
