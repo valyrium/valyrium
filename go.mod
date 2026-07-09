@@ -1,3 +1,3 @@
-module github.com/dndungu/llm-gateway
+module github.com/valyrium/valyrium
 
 go 1.22

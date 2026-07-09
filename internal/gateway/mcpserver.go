@@ -107,7 +107,7 @@ func (s *Server) handleMCPInitialize(w http.ResponseWriter, req JSONRPCRequest) 
 				"tools": map[string]interface{}{},
 			},
 			"serverInfo": map[string]interface{}{
-				"name":    "llm-gateway-relay",
+				"name":    "valyrium-relay",
 				"version": "1.0.0",
 			},
 		},

@@ -1,10 +1,10 @@
-# llm-gateway — Specification
+# valyrium — Specification
 
-This document specifies the Go implementation of llm-gateway (`cmd/llm-gateway`, `internal/gateway`) — the only implementation in this repository.
+This document specifies the Go implementation of valyrium (`cmd/valyrium`, `internal/gateway`) — the only implementation in this repository.
 
 ## 1. Purpose
 
-`llm-gateway` is a single-process Go binary that exposes a subset of the
+`valyrium` is a single-process Go binary that exposes a subset of the
 **OpenAI Chat Completions API** and fulfills every request by spawning the
 **Claude Code CLI** (`claude -p`). It exists so that any client already built
 against the OpenAI protocol — the `openai` SDKs, Open WebUI, LiteLLM,
@@ -14,7 +14,7 @@ login or `ANTHROPIC_API_KEY`), without that client knowing anything about
 Anthropic's API or the CLI.
 
 ```
-OpenAI client ──HTTP──▶ llm-gateway ──spawn──▶ claude -p --output-format stream-json ──▶ Claude
+OpenAI client ──HTTP──▶ valyrium ──spawn──▶ claude -p --output-format stream-json ──▶ Claude
 ```
 
 Design constraints that shape everything below:
@@ -35,7 +35,7 @@ Design constraints that shape everything below:
 
 | File | Responsibility |
 |---|---|
-| `cmd/llm-gateway/main.go` | Entry point: reads config from env, starts the server |
+| `cmd/valyrium/main.go` | Entry point: reads config from env, starts the server |
 | `internal/gateway/server.go` | HTTP routing, auth, concurrency semaphore, SSE framing, tool-turn driving, graceful shutdown |
 | `internal/gateway/openai.go` | OpenAI wire types, message-to-prompt flattening (incl. cold tool history), finish-reason and usage mapping |
 | `internal/gateway/claudecli.go` | Subprocess runner: spawns `claude -p`, parses its `stream-json` output, enforces timeout/abort, session-mode spawning |
