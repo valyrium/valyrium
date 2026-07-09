@@ -13,7 +13,7 @@ import (
 )
 
 func TestAPIParity(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "llm-gateway-test-")
+	tmpDir, err := os.MkdirTemp("", "valyrium-test-")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -339,7 +339,7 @@ exit 0
 }
 
 func TestEnhancements(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "llm-gateway-enhance-test-")
+	tmpDir, err := os.MkdirTemp("", "valyrium-enhance-test-")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dndungu/llm-gateway/internal/gateway"
+	"github.com/valyrium/valyrium/internal/gateway"
 )
 
 func main() {

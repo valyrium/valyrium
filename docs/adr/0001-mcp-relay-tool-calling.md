@@ -11,7 +11,7 @@ lifetime (see "Revision history" at the end).
 
 ## Context
 
-`llm-gateway` wraps `claude -p` to expose an OpenAI-compatible
+`valyrium` wraps `claude -p` to expose an OpenAI-compatible
 `/v1/chat/completions`. It currently spawns the CLI with `--tools ""`,
 so it is a pure text-in/text-out endpoint — no client ever sees a tool
 call, and nothing agentic runs on the gateway host (docs/spec.md §1, §8).
@@ -62,7 +62,7 @@ MCP server, in one process. No second binary, no subprocess besides
 the CLI itself.
 
 ```
-OpenAI client                    llm-gateway                      claude -p (per session)
+OpenAI client                    valyrium                         claude -p (per session)
      │  POST /v1/chat/completions     │                                   │
      │  tools:[...]                   │                                   │
      ├────────────────────────────────►  spawn with                      │

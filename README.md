@@ -1,4 +1,4 @@
-# llm-gateway (Go implementation)
+# valyrium
 
 A zero-dependency OpenAI-compatible HTTP gateway that routes requests to the Claude Code CLI (`claude -p`). Any tool built against the OpenAI Chat Completions API can use Claude models with this gateway.
 
@@ -7,20 +7,20 @@ A zero-dependency OpenAI-compatible HTTP gateway that routes requests to the Cla
 ### Build
 
 ```bash
-go build -o bin/llm-gateway ./cmd/llm-gateway
+go build -o bin/valyrium ./cmd/valyrium
 ```
 
 ### Run
 
 ```bash
-./bin/llm-gateway
+./bin/valyrium
 # or with custom config:
-CLAUDE_GATEWAY_PORT=8787 CLAUDE_GATEWAY_MODEL=opus ./bin/llm-gateway
+CLAUDE_GATEWAY_PORT=8787 CLAUDE_GATEWAY_MODEL=opus ./bin/valyrium
 ```
 
 The server starts with:
 ```
-llm-gateway listening on http://127.0.0.1:8787 (default model: sonnet, concurrency: 4, auth: open)
+valyrium listening on http://127.0.0.1:8787 (default model: sonnet, concurrency: 4, auth: open)
 ```
 
 Then use any OpenAI client:
@@ -143,7 +143,7 @@ The server listens for `SIGINT` and `SIGTERM`. On signal, in-flight requests are
 
 ## Implementation
 
-- **cmd/llm-gateway/main.go** — entry point, reads config from env, starts server
+- **cmd/valyrium/main.go** — entry point, reads config from env, starts server
 - **internal/gateway/server.go** — HTTP routing, auth, concurrency semaphore, streaming, metrics, tool-turn driving
 - **internal/gateway/openai.go** — OpenAI wire format, prompt flattening (incl. cold tool history), usage mapping
 - **internal/gateway/claudecli.go** — subprocess runner, stream-json parsing, lifecycle, session spawning

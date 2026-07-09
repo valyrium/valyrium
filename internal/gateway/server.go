@@ -707,7 +707,7 @@ func (s *Server) ListenAndServe() error {
 	}
 	s.listeners = append(s.listeners, listener)
 
-	log.Printf("llm-gateway listening on http://%s (default model: %s, concurrency: %d, auth: %s)",
+	log.Printf("valyrium listening on http://%s (default model: %s, concurrency: %d, auth: %s)",
 		addr, s.config.DefaultModel, s.config.Concurrency, func() string {
 			if s.config.APIKey != "" {
 				return "api key required"
