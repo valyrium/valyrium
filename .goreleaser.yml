@@ -1,0 +1,66 @@
+version: 2
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    main: ./cmd/valyrium
+    binary: valyrium
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: ["tar.gz"]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+
+brews:
+  - name: valyrium
+    repository:
+      owner: valyrium
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/valyrium/valyrium"
+    description: "OpenAI-compatible HTTP gateway that routes Chat Completions requests to Claude models via the Claude Code CLI, with MCP-relay tool calling"
+    license: "MIT"
+    test: |
+      system "#{bin}/valyrium", "--version"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore\\(deps\\):"
+  groups:
+    - title: "Breaking Changes"
+      regexp: '^.*?!:.+$'
+      order: 0
+    - title: "Features"
+      regexp: '^feat.*'
+      order: 1
+    - title: "Bug Fixes"
+      regexp: '^fix.*'
+      order: 2
+    - title: "Performance"
+      regexp: '^perf.*'
+      order: 3
+    - title: "Other"
+      order: 999
+
+release:
+  github:
+    owner: valyrium
+    name: valyrium
+  prerelease: auto
+  make_latest: true

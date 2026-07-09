@@ -2,6 +2,12 @@
 
 A zero-dependency OpenAI-compatible HTTP gateway that routes requests to the Claude Code CLI (`claude -p`). Any tool built against the OpenAI Chat Completions API can use Claude models with this gateway.
 
+## Install
+
+```bash
+brew install valyrium/tap/valyrium
+```
+
 ## Build and Run
 
 ### Build
@@ -22,6 +28,8 @@ The server starts with:
 ```
 valyrium listening on http://127.0.0.1:8787 (default model: sonnet, concurrency: 4, auth: open)
 ```
+
+`valyrium --version` (or `-v`) prints the build version and exits without starting the server.
 
 Then use any OpenAI client:
 

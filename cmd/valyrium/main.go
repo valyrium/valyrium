@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -9,7 +10,14 @@ import (
 	"github.com/valyrium/valyrium/internal/gateway"
 )
 
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("valyrium %s\n", version)
+		return
+	}
+
 	port := 8787
 	if p, err := strconv.Atoi(os.Getenv("CLAUDE_GATEWAY_PORT")); err == nil {
 		port = p
