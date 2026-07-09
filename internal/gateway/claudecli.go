@@ -269,6 +269,19 @@ type SessionRunOptions struct {
 	ToolTimeoutMS int
 }
 
+// mcpRelayServerName is the MCP server name the gateway registers itself
+// under in the spawned CLI's --mcp-config. Claude Code exposes MCP tools to
+// the model under the qualified name "mcp__<server>__<tool>" to avoid
+// collisions with its own built-in tools, so any tool_use the model proposes
+// arrives prefixed this way and must be stripped before it is handed back to
+// an OpenAI-facing client, which only knows the bare name it declared.
+const mcpRelayServerName = "relay"
+
+func stripMCPToolPrefix(name string) string {
+	prefix := "mcp__" + mcpRelayServerName + "__"
+	return strings.TrimPrefix(name, prefix)
+}
+
 // StartClaudeSession spawns a tool-capable CLI process pointed at the
 // gateway's own MCP endpoint for this session. The process is owned by the
 // session table, not by any HTTP request: it survives the first response
@@ -285,7 +298,7 @@ func StartClaudeSession(sm *SessionManager, sess *Session, opts SessionRunOption
 		"--disable-slash-commands",
 		"--system-prompt", opts.SystemPrompt,
 		"--strict-mcp-config",
-		"--mcp-config", fmt.Sprintf(`{"mcpServers":{"relay":{"type":"http","url":"%s"}}}`, opts.MCPURL),
+		"--mcp-config", fmt.Sprintf(`{"mcpServers":{%q:{"type":"http","url":"%s"}}}`, mcpRelayServerName, opts.MCPURL),
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
@@ -367,7 +380,7 @@ func relaySessionStream(sm *SessionManager, sess *Session, stdout io.Reader, cmd
 			var uses []ToolUseBlock
 			for _, block := range parsed.Message.Content {
 				if block.Type == "tool_use" {
-					uses = append(uses, ToolUseBlock{ID: block.ID, Name: block.Name, Input: block.Input})
+					uses = append(uses, ToolUseBlock{ID: block.ID, Name: stripMCPToolPrefix(block.Name), Input: block.Input})
 				}
 			}
 			ev := SessionEvent{Type: "tool_calls", Model: parsed.Message.Model}

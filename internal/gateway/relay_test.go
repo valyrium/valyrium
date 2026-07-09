@@ -79,6 +79,26 @@ func runClaudeStub(mode string) int {
 			return fail("stub: tools/call failed: " + err.Error())
 		}
 		stubEmitFinal("The weather is " + stubRPCResultText(callResp))
+	case "relay_prefixed":
+		// The real claude CLI exposes MCP tools to the model under the
+		// qualified name "mcp__<server>__<tool>" (here "mcp__relay__..."),
+		// but still issues the actual tools/call JSON-RPC request with the
+		// bare name from tools/list. The gateway must strip the prefix
+		// before handing the tool name back to an OpenAI-facing client.
+		if !stubToolsListHas(listResp, "get_weather") {
+			return fail("stub: tools/list missing get_weather")
+		}
+		fmt.Println(`{"type":"assistant","message":{"model":"claude-stub","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__relay__get_weather","input":{"city":"Nairobi"}}]}}`)
+		fmt.Println(`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`)
+
+		callResp, err := stubRPC(client, url, 3, "tools/call", map[string]interface{}{
+			"name":      "get_weather",
+			"arguments": map[string]interface{}{"city": "Nairobi"},
+		})
+		if err != nil {
+			return fail("stub: tools/call failed: " + err.Error())
+		}
+		stubEmitFinal("The weather is " + stubRPCResultText(callResp))
 	case "sequential":
 		// Announce both calls, then dispatch them strictly sequentially:
 		// tools/call #2 is only issued after #1's MCP response arrives.
@@ -342,6 +362,105 @@ func TestMCPRelay(t *testing.T) {
 	}
 	if got := second.Choices[0].Message.Content; got != "The weather is sunny, 24C" {
 		t.Errorf("final answer should embed the tool result, got %v", got)
+	}
+}
+
+// TestMCPRelayStripsToolNamePrefix pins the fix for a real bug found by
+// running an actual OpenAI-tool-calling client (opencode) through the
+// gateway against the real claude CLI: Claude Code exposes MCP tools to the
+// model as "mcp__relay__<tool>", and the gateway must strip that prefix
+// before returning tool_calls, or the client won't recognize its own tool.
+func TestMCPRelayStripsToolNamePrefix(t *testing.T) {
+	t.Setenv("CLAUDE_STUB_MODE", "relay_prefixed")
+	_, ts := newRelayServer(t, Config{})
+
+	userMsg := map[string]interface{}{"role": "user", "content": "What's the weather in Nairobi?"}
+
+	status, first := postChat(t, ts.URL, map[string]interface{}{
+		"model":    "sonnet",
+		"messages": []interface{}{userMsg},
+		"tools":    weatherTools(),
+	})
+	if status != 200 {
+		t.Fatalf("first turn: expected 200, got %d", status)
+	}
+	if len(first.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(first.Choices[0].Message.ToolCalls))
+	}
+	call := first.Choices[0].Message.ToolCalls[0]
+	if call.Function.Name != "get_weather" {
+		t.Errorf("expected the mcp__relay__ prefix stripped, got function.name %q", call.Function.Name)
+	}
+
+	status, second := postChat(t, ts.URL, map[string]interface{}{
+		"model": "sonnet",
+		"messages": []interface{}{
+			userMsg,
+			map[string]interface{}{"role": "assistant", "content": nil, "tool_calls": toolCallsAsMessages(first.Choices[0].Message.ToolCalls)},
+			map[string]interface{}{"role": "tool", "tool_call_id": call.ID, "content": "sunny, 24C"},
+		},
+		"tools": weatherTools(),
+	})
+	if status != 200 {
+		t.Fatalf("second turn: expected 200, got %d", status)
+	}
+	if got := second.Choices[0].Message.Content; got != "The weather is sunny, 24C" {
+		t.Errorf("final answer should embed the tool result, got %v", got)
+	}
+}
+
+// TestStreamingToolTurnLogsUsage covers a path no prior test exercised: a
+// STREAMING tool-calling turn (what a real OpenAI-tool-calling client like
+// opencode actually sends). Found via a real opencode dogfood run: the
+// structured stderr log for streaming tool turns always reported
+// prompt_tokens:0, completion_tokens:0 because streamToolTurn never wrote
+// usage back to the request log. Also re-confirms the tool-name-prefix
+// strip (§ relay_prefixed) survives the streaming path.
+func TestStreamingToolTurnLogsUsage(t *testing.T) {
+	t.Setenv("CLAUDE_STUB_MODE", "relay_prefixed")
+	_, ts := newRelayServer(t, Config{})
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"model":    "sonnet",
+		"stream":   true,
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "What's the weather in Nairobi?"}},
+		"tools":    weatherTools(),
+	})
+
+	var sseBody string
+	logLine := captureStderr(t, func() {
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Post(ts.URL+"/v1/chat/completions", "application/json", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatalf("POST /v1/chat/completions: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		sseBody = string(raw)
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, sseBody)
+		}
+	})
+
+	if !strings.Contains(sseBody, `"name":"get_weather"`) {
+		t.Errorf("expected bare tool name get_weather in SSE tool_calls chunk, got: %s", sseBody)
+	}
+	if strings.Contains(sseBody, "mcp__relay__") {
+		t.Errorf("mcp__relay__ prefix leaked into the SSE response: %s", sseBody)
+	}
+	if !strings.Contains(sseBody, `"finish_reason":"tool_calls"`) {
+		t.Errorf("expected finish_reason tool_calls in SSE stream, got: %s", sseBody)
+	}
+
+	var entry struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	}
+	if err := json.Unmarshal([]byte(logLine), &entry); err != nil {
+		t.Fatalf("stderr log line was not valid JSON: %v\nline: %s", err, logLine)
+	}
+	if entry.PromptTokens != 7 || entry.CompletionTokens != 3 {
+		t.Errorf("expected prompt_tokens=7 completion_tokens=3 (from the stub's message_delta usage) in the request log, got %+v", entry)
 	}
 }
 

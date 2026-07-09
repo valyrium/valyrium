@@ -270,7 +270,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer s.slots.Release()
 
 	if req.Stream {
-		s.handleStreamingResponse(w, r, id, created, model, effort, systemPrompt, prompt)
+		s.handleStreamingResponse(w, r, id, created, model, effort, systemPrompt, prompt, &promptTokens, &completionTokens)
 		return
 	}
 
@@ -300,7 +300,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	s.sendJSON(w, 200, CompletionResponseWithCost(id, created, *completion))
 }
 
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, id string, created int64, model, effort, systemPrompt, prompt string) {
+func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, id string, created int64, model, effort, systemPrompt, prompt string, promptTokens, completionTokens *int) {
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
@@ -345,6 +345,9 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 		})
 		return
 	}
+
+	*promptTokens = completion.Usage.InputTokens + completion.Usage.CacheReadInputTokens + completion.Usage.CacheCreationInputTokens
+	*completionTokens = completion.Usage.OutputTokens
 
 	usage := ToOpenAIUsage(completion.Usage, completion.CostUSD)
 	write(NewStreamChunk(id, created, completion.Model, StreamChunkDelta{}, nil, &usage))
@@ -515,7 +518,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	}
 
 	if req.Stream {
-		return s.streamToolTurn(w, r, sess, id, created, model)
+		return s.streamToolTurn(w, r, sess, id, created, model, promptTokens, completionTokens)
 	}
 
 	outcome := s.collectTurn(r.Context(), sess, nil)
@@ -556,7 +559,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	return 200
 }
 
-func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Session, id string, created int64, model string) int {
+func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Session, id string, created int64, model string, promptTokens, completionTokens *int) int {
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
@@ -593,6 +596,8 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 		return 200
 	}
 
+	*promptTokens = outcome.usage.InputTokens + outcome.usage.CacheReadInputTokens + outcome.usage.CacheCreationInputTokens
+	*completionTokens = outcome.usage.OutputTokens
 	usage := ToOpenAIUsage(outcome.usage, outcome.costUSD)
 
 	if outcome.final {

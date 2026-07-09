@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -239,6 +240,42 @@ exit 0
 		}
 	})
 
+	t.Run("streaming request logs real usage to stderr", func(t *testing.T) {
+		// Regression: handleStreamingResponse used to omit usage from the
+		// structured stderr log entirely (promptTokens/completionTokens were
+		// never written back from the streaming path), so every streaming
+		// request logged prompt_tokens:0, completion_tokens:0 regardless of
+		// actual usage. Found via a real opencode-driven dogfood run, where
+		// opencode issues streaming requests and the log was silently wrong.
+		reqBody := ChatCompletionRequest{
+			Model:  "sonnet",
+			Stream: true,
+			Messages: []OpenAIMessage{
+				{Role: "user", Content: "Say hi"},
+			},
+		}
+		body, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("content-type", "application/json")
+		w := httptest.NewRecorder()
+
+		logLine := captureStderr(t, func() {
+			server.ServeHTTP(w, req)
+		})
+
+		var entry struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		}
+		if err := json.Unmarshal([]byte(logLine), &entry); err != nil {
+			t.Fatalf("stderr log line was not valid JSON: %v\nline: %s", err, logLine)
+		}
+		if entry.PromptTokens != 10 || entry.CompletionTokens != 2 {
+			t.Errorf("expected prompt_tokens=10 completion_tokens=2 in the request log, got %+v", entry)
+		}
+	})
+
 	t.Run("POST with unknown model falls back", func(t *testing.T) {
 		reqBody := ChatCompletionRequest{
 			Model: "gpt-4o",
@@ -463,4 +500,29 @@ exit 0
 			t.Error("expected llmgateway_request_duration_seconds metric")
 		}
 	})
+}
+
+// captureStderr redirects os.Stderr for the duration of fn (which must run
+// and complete its writes synchronously) and returns the last non-empty
+// line written, which is the structured request log entry.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	fn()
+	os.Stderr = orig
+	w.Close()
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	return lines[len(lines)-1]
 }
