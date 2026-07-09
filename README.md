@@ -51,7 +51,7 @@ All configuration is via environment variables, read at startup:
 |---|---|---|
 | `CLAUDE_GATEWAY_PORT` | `8787` | HTTP listen port |
 | `CLAUDE_GATEWAY_HOST` | `127.0.0.1` | Bind address (loopback-only by default) |
-| `CLAUDE_GATEWAY_API_KEY` | *(unset)* | If set, all routes except `/healthz` require this key as `Authorization: Bearer <key>` or `x-api-key: <key>` |
+| `CLAUDE_GATEWAY_API_KEY` | *(unset)* | If set, all routes except `/healthz` require this key as `Authorization: Bearer <key>` or `x-api-key: <key>` (compared in constant time) |
 | `CLAUDE_GATEWAY_MODEL` | `sonnet` | Default model; also fallback for unrecognized ids |
 | `CLAUDE_GATEWAY_MODELS` | `sonnet,opus,haiku` | Comma-separated ids advertised by `GET /v1/models` and accepted as valid request models |
 | `CLAUDE_GATEWAY_BIN` | `claude` | Path to Claude Code CLI executable |
@@ -151,17 +151,6 @@ The server listens for `SIGINT` and `SIGTERM`. On signal, in-flight requests are
 - **internal/gateway/mcpserver.go** — the `/mcp/{sessionId}` JSON-RPC surface (initialize, tools/list, tools/call)
 - **internal/gateway/metrics.go** — Prometheus exposition format writer
 - **go.mod** — no runtime dependencies (stdlib only)
-
-## Differences from TypeScript reference
-
-The Go implementation maintains API parity with the TypeScript version (see `src/llm-gateway/`) plus these enhancements:
-
-1. **cost_usd exposed** — the non-streaming response's `usage` and streaming terminal chunk's `usage` both include `cost_usd` from the CLI
-2. **/metrics endpoint** — Prometheus-format metrics (requests_total, inflight_requests, request_duration_seconds)
-3. **Structured stderr logging** — JSON request logs after each completion
-4. **Constant-time auth** — API key comparison uses `crypto/subtle.ConstantTimeCompare`
-5. **Graceful shutdown** — SIGINT/SIGTERM handling allows in-flight requests to finish
-6. **Tool calling** — OpenAI-style tool calling via the MCP relay (ignored by the TypeScript version)
 
 ## Testing
 
