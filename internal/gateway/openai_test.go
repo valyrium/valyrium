@@ -6,11 +6,11 @@ import (
 
 func TestBuildPrompt(t *testing.T) {
 	tests := []struct {
-		name          string
-		messages      []OpenAIMessage
-		expectSystem  string
-		expectPrompt  string
-		expectErr     bool
+		name         string
+		messages     []OpenAIMessage
+		expectSystem string
+		expectPrompt string
+		expectErr    bool
 	}{
 		{
 			name:      "empty messages",

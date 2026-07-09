@@ -13,9 +13,9 @@ type OpenAIMessage struct {
 }
 
 type ToolCall struct {
-	ID       string                 `json:"id"`
-	Type     string                 `json:"type"`
-	Function ToolCallFunction       `json:"function"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
 }
 
 type ToolCallFunction struct {
@@ -24,8 +24,8 @@ type ToolCallFunction struct {
 }
 
 type ToolSchema struct {
-	Type     string                 `json:"type"`
-	Function ToolFunctionSchema     `json:"function"`
+	Type     string             `json:"type"`
+	Function ToolFunctionSchema `json:"function"`
 }
 
 type ToolFunctionSchema struct {
@@ -35,16 +35,16 @@ type ToolFunctionSchema struct {
 }
 
 type ChatCompletionRequest struct {
-	Model             string           `json:"model"`
-	Messages          []OpenAIMessage  `json:"messages"`
-	Tools             []ToolSchema     `json:"tools"`
-	ToolChoice        interface{}      `json:"tool_choice"`
-	Stream            bool             `json:"stream"`
-	ReasoningEffort   string           `json:"reasoning_effort"`
-	Temperature       float64          `json:"temperature"`
-	TopP              float64          `json:"top_p"`
-	MaxTokens         int              `json:"max_tokens"`
-	MaxCompletionTokens int            `json:"max_completion_tokens"`
+	Model               string          `json:"model"`
+	Messages            []OpenAIMessage `json:"messages"`
+	Tools               []ToolSchema    `json:"tools"`
+	ToolChoice          interface{}     `json:"tool_choice"`
+	Stream              bool            `json:"stream"`
+	ReasoningEffort     string          `json:"reasoning_effort"`
+	Temperature         float64         `json:"temperature"`
+	TopP                float64         `json:"top_p"`
+	MaxTokens           int             `json:"max_tokens"`
+	MaxCompletionTokens int             `json:"max_completion_tokens"`
 }
 
 type TextContentPart struct {
@@ -69,6 +69,7 @@ type Completion struct {
 
 const defaultSystemPrompt = "You are a helpful assistant."
 const transcriptInstruction = `The user message contains a conversation transcript with turns marked "[user]:" and "[assistant]:". Continue the conversation by writing the next assistant reply to the final user turn. Output only the reply itself, with no role marker or commentary about the transcript.`
+const toolTranscriptInstruction = `Turns marked "[assistant called tool <name> (<id>)]" and "[tool <name> (<id>) returned]" record tool calls the assistant made earlier and the results those tools produced; treat them as completed context when writing the reply.`
 
 func textOf(msg OpenAIMessage) (string, error) {
 	if msg.Content == nil {
@@ -107,30 +108,69 @@ func BuildPrompt(messages []OpenAIMessage) (systemPrompt, prompt string, err err
 
 	var systemParts []string
 	type turn struct {
-		role string
-		text string
+		kind     string // "user" | "assistant" | "tool"
+		raw      string
+		rendered string
 	}
 	var turns []turn
+	toolNames := make(map[string]string)
+	hasToolTurns := false
 
 	for _, msg := range messages {
-		text, err := textOf(msg)
-		if err != nil {
-			return "", "", err
-		}
-
 		switch msg.Role {
 		case "system", "developer":
+			text, err := textOf(msg)
+			if err != nil {
+				return "", "", err
+			}
 			systemParts = append(systemParts, text)
 		case "user":
-			turns = append(turns, turn{role: "user", text: text})
+			text, err := textOf(msg)
+			if err != nil {
+				return "", "", err
+			}
+			turns = append(turns, turn{kind: "user", raw: text, rendered: fmt.Sprintf("[user]: %s", text)})
 		case "assistant":
-			turns = append(turns, turn{role: "assistant", text: text})
+			text, err := textOf(msg)
+			if err != nil {
+				return "", "", err
+			}
+			if text != "" || len(msg.ToolCalls) == 0 {
+				turns = append(turns, turn{kind: "assistant", raw: text, rendered: fmt.Sprintf("[assistant]: %s", text)})
+			}
+			// Cold-history flattening: serialize tool calls the gateway
+			// has no live session for as transcript markers (ADR 0001 §3).
+			for _, tc := range msg.ToolCalls {
+				toolNames[tc.ID] = tc.Function.Name
+				turns = append(turns, turn{
+					kind:     "tool",
+					rendered: fmt.Sprintf("[assistant called tool %s (%s)]: %s", tc.Function.Name, tc.ID, tc.Function.Arguments),
+				})
+				hasToolTurns = true
+			}
+		case "tool":
+			if msg.ToolCallID == "" {
+				return "", "", fmt.Errorf("tool messages must carry a tool_call_id")
+			}
+			text, err := textOf(msg)
+			if err != nil {
+				return "", "", err
+			}
+			name := toolNames[msg.ToolCallID]
+			if name == "" {
+				name = "unknown"
+			}
+			turns = append(turns, turn{
+				kind:     "tool",
+				rendered: fmt.Sprintf("[tool %s (%s) returned]: %s", name, msg.ToolCallID, text),
+			})
+			hasToolTurns = true
 		default:
 			return "", "", fmt.Errorf("unsupported message role: %s", msg.Role)
 		}
 	}
 
-	if len(turns) == 0 || turns[len(turns)-1].role != "user" {
+	if len(turns) == 0 || turns[len(turns)-1].kind == "assistant" {
 		return "", "", fmt.Errorf("the last non-system message must be a user message")
 	}
 
@@ -139,14 +179,17 @@ func BuildPrompt(messages []OpenAIMessage) (systemPrompt, prompt string, err err
 		systemPrompt = defaultSystemPrompt
 	}
 
-	if len(turns) == 1 {
-		return systemPrompt, turns[0].text, nil
+	if len(turns) == 1 && turns[0].kind == "user" {
+		return systemPrompt, turns[0].raw, nil
 	}
 
 	systemPrompt += "\n\n" + transcriptInstruction
+	if hasToolTurns {
+		systemPrompt += " " + toolTranscriptInstruction
+	}
 	var turnStrs []string
 	for _, t := range turns {
-		turnStrs = append(turnStrs, fmt.Sprintf("[%s]: %s", t.role, t.text))
+		turnStrs = append(turnStrs, t.rendered)
 	}
 	prompt = strings.Join(turnStrs, "\n\n")
 
@@ -197,12 +240,12 @@ type Choice struct {
 }
 
 type CompletionResponse struct {
-	ID      string        `json:"id"`
-	Object  string        `json:"object"`
-	Created int64         `json:"created"`
-	Model   string        `json:"model"`
-	Choices []Choice      `json:"choices"`
-	Usage   OpenAIUsage   `json:"usage"`
+	ID      string      `json:"id"`
+	Object  string      `json:"object"`
+	Created int64       `json:"created"`
+	Model   string      `json:"model"`
+	Choices []Choice    `json:"choices"`
+	Usage   OpenAIUsage `json:"usage"`
 }
 
 func CompletionResponseWithCost(id string, created int64, completion Completion) CompletionResponse {
@@ -226,22 +269,88 @@ func CompletionResponseWithCost(id string, created int64, completion Completion)
 	}
 }
 
+// ToolCallMessage is the assistant message shape for a turn that proposes
+// tool calls: content is null (or the text produced alongside), and
+// tool_calls carries the gateway-minted call ids.
+type ToolCallMessage struct {
+	Role      string      `json:"role"`
+	Content   interface{} `json:"content"`
+	ToolCalls []ToolCall  `json:"tool_calls"`
+}
+
+type ToolCallChoice struct {
+	Index        int             `json:"index"`
+	Message      ToolCallMessage `json:"message"`
+	FinishReason string          `json:"finish_reason"`
+	Logprobs     *string         `json:"logprobs"`
+}
+
+type ToolCallCompletionResponse struct {
+	ID      string           `json:"id"`
+	Object  string           `json:"object"`
+	Created int64            `json:"created"`
+	Model   string           `json:"model"`
+	Choices []ToolCallChoice `json:"choices"`
+	Usage   OpenAIUsage      `json:"usage"`
+}
+
+func NewToolCallResponse(id string, created int64, model, text string, calls []*PendingToolCall, usage OpenAIUsage) ToolCallCompletionResponse {
+	var content interface{}
+	if text != "" {
+		content = text
+	}
+	return ToolCallCompletionResponse{
+		ID:      id,
+		Object:  "chat.completion",
+		Created: created,
+		Model:   model,
+		Choices: []ToolCallChoice{
+			{
+				Index: 0,
+				Message: ToolCallMessage{
+					Role:      "assistant",
+					Content:   content,
+					ToolCalls: ToolCallsFromPending(calls),
+				},
+				FinishReason: "tool_calls",
+				Logprobs:     nil,
+			},
+		},
+		Usage: usage,
+	}
+}
+
+func ToolCallsFromPending(calls []*PendingToolCall) []ToolCall {
+	toolCalls := make([]ToolCall, len(calls))
+	for i, p := range calls {
+		toolCalls[i] = ToolCall{
+			ID:   p.ID,
+			Type: "function",
+			Function: ToolCallFunction{
+				Name:      p.Name,
+				Arguments: p.Arguments,
+			},
+		}
+	}
+	return toolCalls
+}
+
 type StreamChunkDelta map[string]interface{}
 
 type StreamChunkChoice struct {
-	Index        int                    `json:"index"`
-	Delta        StreamChunkDelta       `json:"delta"`
-	FinishReason *string                `json:"finish_reason"`
-	Logprobs     *string                `json:"logprobs"`
+	Index        int              `json:"index"`
+	Delta        StreamChunkDelta `json:"delta"`
+	FinishReason *string          `json:"finish_reason"`
+	Logprobs     *string          `json:"logprobs"`
 }
 
 type StreamChunk struct {
-	ID      string               `json:"id"`
-	Object  string               `json:"object"`
-	Created int64                `json:"created"`
-	Model   string               `json:"model"`
-	Choices []StreamChunkChoice  `json:"choices"`
-	Usage   *OpenAIUsage         `json:"usage,omitempty"`
+	ID      string              `json:"id"`
+	Object  string              `json:"object"`
+	Created int64               `json:"created"`
+	Model   string              `json:"model"`
+	Choices []StreamChunkChoice `json:"choices"`
+	Usage   *OpenAIUsage        `json:"usage,omitempty"`
 }
 
 func NewStreamChunk(id string, created int64, model string, delta StreamChunkDelta, finishReason *string, usage *OpenAIUsage) StreamChunk {
@@ -264,15 +373,15 @@ func NewStreamChunk(id string, created int64, model string, delta StreamChunkDel
 
 type ErrorResponse struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
+		Message string  `json:"message"`
+		Type    string  `json:"type"`
 		Code    *string `json:"code"`
 		Param   *string `json:"param"`
 	} `json:"error"`
 }
 
 type ModelsResponse struct {
-	Object string `json:"object"`
+	Object string      `json:"object"`
 	Data   []ModelInfo `json:"data"`
 }
 

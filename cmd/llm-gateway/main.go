@@ -53,15 +53,33 @@ func main() {
 		concurrency = c
 	}
 
+	maxSessions := 16
+	if m, err := strconv.Atoi(os.Getenv("CLAUDE_GATEWAY_MAX_SESSIONS")); err == nil {
+		maxSessions = m
+	}
+
+	toolTimeoutMS := 120000
+	if t, err := strconv.Atoi(os.Getenv("CLAUDE_GATEWAY_TOOL_TIMEOUT_MS")); err == nil {
+		toolTimeoutMS = t
+	}
+
+	sessionIdleMS := 600000
+	if t, err := strconv.Atoi(os.Getenv("CLAUDE_GATEWAY_SESSION_IDLE_MS")); err == nil {
+		sessionIdleMS = t
+	}
+
 	config := gateway.Config{
-		Port:         port,
-		Host:         host,
-		APIKey:       apiKey,
-		DefaultModel: defaultModel,
-		Models:       models,
-		ClaudeBin:    claudeBin,
-		TimeoutMS:    timeoutMS,
-		Concurrency:  concurrency,
+		Port:          port,
+		Host:          host,
+		APIKey:        apiKey,
+		DefaultModel:  defaultModel,
+		Models:        models,
+		ClaudeBin:     claudeBin,
+		TimeoutMS:     timeoutMS,
+		Concurrency:   concurrency,
+		MaxSessions:   maxSessions,
+		ToolTimeoutMS: toolTimeoutMS,
+		SessionIdleMS: sessionIdleMS,
 	}
 
 	server := gateway.NewServer(config)

@@ -317,3 +317,42 @@ standard library only (zero runtime dependencies, `go.mod` contains no `require`
 
 5. **Graceful shutdown**: SIGINT/SIGTERM are caught; in-flight requests are
    allowed to complete before exit.
+
+## 12. Tool calling via MCP relay (Go implementation)
+
+The Go implementation additionally supports OpenAI-style **tool calling**
+(server-proposes / client-executes), which §9 lists as absent from the
+TypeScript reference. Full design in `docs/adr/0001-mcp-relay-tool-calling.md`;
+summary:
+
+- A request carrying `tools` (and `tool_choice` other than `"none"`) spawns
+  the CLI with `--strict-mcp-config --mcp-config` pointed at the gateway's
+  own `POST /mcp/{sessionId}` endpoint, which implements exactly three
+  JSON-RPC methods: `initialize`, `tools/list` (the request's tool schemas,
+  field-renamed to MCP's `{name, description, inputSchema}`), and
+  `tools/call`.
+- When the model proposes tool calls, the turn is finalized **from the
+  stream announcement** (`stop_reason: "tool_use"`), never from MCP
+  traffic: the HTTP response carries `tool_calls` with gateway-minted
+  `call_...` ids and `finish_reason: "tool_calls"`. The CLI's own
+  `tools/call` requests are parked unanswered; the idle process is owned by
+  the session table, not the HTTP request.
+- A follow-up request whose trailing `{role:"tool", tool_call_id, content}`
+  messages match a live session (correlation by tool_call_id) resolves the
+  parked calls and the CLI resumes. Non-matching tool history is flattened
+  into the transcript as `[assistant called tool <name> (<id>)]` /
+  `[tool <name> (<id>) returned]` markers (cold history — degraded but
+  recoverable after restarts/reaping).
+- Security posture is unchanged: `--tools ""` stays, the relay executes
+  nothing on the gateway host, and the model can reach only the tools the
+  request itself declared. The unguessable 128-bit session id is the MCP
+  endpoint's credential.
+- Resource accounting: parked sessions release their concurrency slot;
+  `CLAUDE_GATEWAY_MAX_SESSIONS` (default 16) caps live CLI processes (429
+  at the cap); `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` (default 120000) bounds the
+  wait for a client tool result and `CLAUDE_GATEWAY_SESSION_IDLE_MS`
+  (default 600000) reaps abandoned sessions, both via one background
+  sweeper. `CLAUDE_GATEWAY_TIMEOUT_MS` is per-turn for sessions. The
+  `/metrics` endpoint exposes `llmgateway_live_sessions`.
+- Requests without `tools` are completely unaffected (same stateless path
+  as §5).

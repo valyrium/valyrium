@@ -10,52 +10,98 @@ import (
 	"time"
 )
 
-type Session struct {
-	ID              string
-	Process         *exec.Cmd
-	ProcessStarted  bool
-	Tools           []ToolSchema
-	PendingCalls    map[string]*PendingToolCall
-	BufferedResults map[string]string
-	CreatedAt       time.Time
-	LastActivity    time.Time
-	Mu              sync.Mutex
+// ToolUseBlock is one tool invocation announced by the model in the
+// CLI's stream-json output.
+type ToolUseBlock struct {
+	ID    string
+	Name  string
+	Input json.RawMessage
 }
 
+// SessionEvent is one parsed occurrence on a session's CLI stream. The
+// reader goroutine produces these; the HTTP handler driving the current
+// turn consumes them.
+type SessionEvent struct {
+	Type       string // "text" | "tool_calls" | "stop" | "run_end"
+	Text       string
+	Calls      []*PendingToolCall
+	StopReason *string
+	Model      string
+	Usage      *Usage
+	CostUSD    *float64
+	ResultText *string
+	Err        error
+}
+
+// PendingToolCall is a tool call announced on the stream and not yet
+// resolved by a client-supplied result. Resolver is buffered so a result
+// arriving before the CLI's MCP tools/call request is never lost.
 type PendingToolCall struct {
+	ID        string
 	Name      string
-	Arguments json.RawMessage
+	Arguments string // canonical JSON
 	Resolver  chan string
+	Claimed   bool
+	Resolved  bool
+}
+
+type Session struct {
+	ID           string
+	Cmd          *exec.Cmd
+	Tools        []ToolSchema
+	Events       chan SessionEvent
+	Pending      []*PendingToolCall // announcement order
+	PendingByID  map[string]*PendingToolCall
+	CreatedAt    time.Time
+	LastActivity time.Time
+	Reaped       bool
+	Mu           sync.Mutex
 }
 
 type SessionManager struct {
-	sessions          map[string]*Session
+	sessions            map[string]*Session
 	toolCallIDToSession map[string]string
-	mu                sync.RWMutex
-	maxSessions       int
-	toolTimeoutMS     int
-	sessionIdleMS     int
-	sweeper           chan struct{}
+	mu                  sync.RWMutex
+	maxSessions         int
+	toolTimeoutMS       int
+	sessionIdleMS       int
+	done                chan struct{}
 }
 
 func NewSessionManager(maxSessions, toolTimeoutMS, sessionIdleMS int) *SessionManager {
 	sm := &SessionManager{
-		sessions:          make(map[string]*Session),
+		sessions:            make(map[string]*Session),
 		toolCallIDToSession: make(map[string]string),
-		maxSessions:       maxSessions,
-		toolTimeoutMS:     toolTimeoutMS,
-		sessionIdleMS:     sessionIdleMS,
-		sweeper:           make(chan struct{}),
+		maxSessions:         maxSessions,
+		toolTimeoutMS:       toolTimeoutMS,
+		sessionIdleMS:       sessionIdleMS,
+		done:                make(chan struct{}),
 	}
 	go sm.sweepLoop()
 	return sm
 }
 
 func (sm *SessionManager) sweepLoop() {
-	ticker := time.NewTicker(time.Duration(sm.toolTimeoutMS/10) * time.Millisecond)
+	interval := sm.toolTimeoutMS
+	if sm.sessionIdleMS < interval {
+		interval = sm.sessionIdleMS
+	}
+	interval = interval / 10
+	if interval < 10 {
+		interval = 10
+	}
+	if interval > 5000 {
+		interval = 5000
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
 	defer ticker.Stop()
-	for range ticker.C {
-		sm.sweep()
+	for {
+		select {
+		case <-ticker.C:
+			sm.sweep()
+		case <-sm.done:
+			return
+		}
 	}
 }
 
@@ -69,44 +115,48 @@ func (sm *SessionManager) sweep() {
 
 	for id, sess := range sm.sessions {
 		sess.Mu.Lock()
-		hasPending := len(sess.PendingCalls) > 0
-		idle := now.Sub(sess.LastActivity) > idleTimeoutDur
-		toolTimeout := hasPending && now.Sub(sess.LastActivity) > toolTimeoutDur
+		hasPending := false
+		for _, p := range sess.Pending {
+			if !p.Resolved {
+				hasPending = true
+				break
+			}
+		}
+		age := now.Sub(sess.LastActivity)
 		sess.Mu.Unlock()
 
-		if toolTimeout || idle {
+		if (hasPending && age > toolTimeoutDur) || (!hasPending && age > idleTimeoutDur) {
 			sm.reapSessionLocked(id)
 		}
 	}
 }
 
-func (sm *SessionManager) CreateSession(tools []ToolSchema) string {
+// CreateSession registers a new session, or returns nil when the
+// MaxSessions cap is reached.
+func (sm *SessionManager) CreateSession(tools []ToolSchema) *Session {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	id := newSessionID()
-	sess := &Session{
-		ID:              id,
-		Tools:           tools,
-		PendingCalls:    make(map[string]*PendingToolCall),
-		BufferedResults: make(map[string]string),
-		CreatedAt:       time.Now(),
-		LastActivity:    time.Now(),
+	if len(sm.sessions) >= sm.maxSessions {
+		return nil
 	}
-	sm.sessions[id] = sess
-	return id
+
+	sess := &Session{
+		ID:           newSessionID(),
+		Tools:        tools,
+		Events:       make(chan SessionEvent, 64),
+		PendingByID:  make(map[string]*PendingToolCall),
+		CreatedAt:    time.Now(),
+		LastActivity: time.Now(),
+	}
+	sm.sessions[sess.ID] = sess
+	return sess
 }
 
 func (sm *SessionManager) GetSession(sessionID string) *Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.sessions[sessionID]
-}
-
-func (sm *SessionManager) RegisterToolCallID(toolCallID, sessionID string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.toolCallIDToSession[toolCallID] = sessionID
 }
 
 func (sm *SessionManager) GetSessionByToolCallID(toolCallID string) *Session {
@@ -118,6 +168,78 @@ func (sm *SessionManager) GetSessionByToolCallID(toolCallID string) *Session {
 		return nil
 	}
 	return sm.sessions[sessionID]
+}
+
+// RegisterAnnouncedCalls mints tool_call_ids for tool_use blocks announced
+// on the stream, records them as pending on the session, and indexes them
+// globally for continuation correlation. Called from the stream reader at
+// announcement time so an MCP tools/call can never race ahead of
+// registration.
+func (sm *SessionManager) RegisterAnnouncedCalls(sess *Session, uses []ToolUseBlock) []*PendingToolCall {
+	calls := make([]*PendingToolCall, 0, len(uses))
+
+	sess.Mu.Lock()
+	if sess.Reaped {
+		sess.Mu.Unlock()
+		return nil
+	}
+	for _, u := range uses {
+		p := &PendingToolCall{
+			ID:        NewToolCallID(),
+			Name:      u.Name,
+			Arguments: canonicalJSON(u.Input),
+			Resolver:  make(chan string, 1),
+		}
+		sess.Pending = append(sess.Pending, p)
+		sess.PendingByID[p.ID] = p
+		calls = append(calls, p)
+	}
+	sess.LastActivity = time.Now()
+	sess.Mu.Unlock()
+
+	sm.mu.Lock()
+	for _, p := range calls {
+		sm.toolCallIDToSession[p.ID] = sess.ID
+	}
+	sm.mu.Unlock()
+
+	return calls
+}
+
+// ResolveToolCall delivers a client-supplied result to a pending call.
+// Returns false when the tool_call_id is unknown or already resolved.
+func (sm *SessionManager) ResolveToolCall(sess *Session, toolCallID, result string) bool {
+	sess.Mu.Lock()
+	p := sess.PendingByID[toolCallID]
+	if p == nil || p.Resolved {
+		sess.Mu.Unlock()
+		return false
+	}
+	p.Resolved = true
+	p.Resolver <- result
+	sess.LastActivity = time.Now()
+	sess.Mu.Unlock()
+
+	sm.mu.Lock()
+	delete(sm.toolCallIDToSession, toolCallID)
+	sm.mu.Unlock()
+	return true
+}
+
+// ClaimPendingCall matches an MCP tools/call to an announced-but-unclaimed
+// pending call by (name, canonical arguments) in announcement order.
+func (sess *Session) ClaimPendingCall(name, canonArgs string) *PendingToolCall {
+	sess.Mu.Lock()
+	defer sess.Mu.Unlock()
+
+	for _, p := range sess.Pending {
+		if !p.Claimed && p.Name == name && p.Arguments == canonArgs {
+			p.Claimed = true
+			sess.LastActivity = time.Now()
+			return p
+		}
+	}
+	return nil
 }
 
 func (sm *SessionManager) ReapSession(sessionID string) {
@@ -133,8 +255,15 @@ func (sm *SessionManager) reapSessionLocked(sessionID string) {
 	}
 
 	sess.Mu.Lock()
-	if sess.Process != nil && sess.ProcessStarted {
-		sess.Process.Process.Kill()
+	sess.Reaped = true
+	for _, p := range sess.Pending {
+		if !p.Resolved {
+			p.Resolved = true
+			close(p.Resolver)
+		}
+	}
+	if sess.Cmd != nil && sess.Cmd.Process != nil {
+		sess.Cmd.Process.Kill()
 	}
 	sess.Mu.Unlock()
 
@@ -153,25 +282,40 @@ func (sm *SessionManager) GetSessionCount() int {
 	return len(sm.sessions)
 }
 
-func (sm *SessionManager) CanCreateSession() bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return len(sm.sessions) < sm.maxSessions
-}
-
 func (sm *SessionManager) Close() {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	for _, sess := range sm.sessions {
-		sess.Mu.Lock()
-		if sess.Process != nil && sess.ProcessStarted {
-			sess.Process.Process.Kill()
-		}
-		sess.Mu.Unlock()
+	ids := make([]string, 0, len(sm.sessions))
+	for id := range sm.sessions {
+		ids = append(ids, id)
 	}
-	sm.sessions = make(map[string]*Session)
-	sm.toolCallIDToSession = make(map[string]string)
+	for _, id := range ids {
+		sm.reapSessionLocked(id)
+	}
+	sm.mu.Unlock()
+
+	select {
+	case <-sm.done:
+	default:
+		close(sm.done)
+	}
+}
+
+// canonicalJSON re-serializes a JSON value so that two byte-different but
+// semantically equal argument objects compare equal (Go marshals map keys
+// sorted). Empty input canonicalizes to "{}".
+func canonicalJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "{}"
+	}
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(raw)
+	}
+	return string(b)
 }
 
 func newSessionID() string {

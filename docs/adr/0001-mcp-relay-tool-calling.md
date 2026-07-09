@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed. Not implemented. Revision 2 — adversarial design review fixed
-a finalization deadlock, replaced prefix-hash session correlation with
-tool_call_id correlation, and detached session lifetime from request
+Accepted. Implemented in `internal/gateway` (session.go, mcpserver.go,
+claudecli.go, server.go) with the phase-4 proof harness in
+`internal/gateway/relay_test.go`. Revision 2 — adversarial design review
+fixed a finalization deadlock, replaced prefix-hash session correlation
+with tool_call_id correlation, and detached session lifetime from request
 lifetime (see "Revision history" at the end).
 
 ## Context

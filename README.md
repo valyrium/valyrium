@@ -55,8 +55,11 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_MODEL` | `sonnet` | Default model; also fallback for unrecognized ids |
 | `CLAUDE_GATEWAY_MODELS` | `sonnet,opus,haiku` | Comma-separated ids advertised by `GET /v1/models` and accepted as valid request models |
 | `CLAUDE_GATEWAY_BIN` | `claude` | Path to Claude Code CLI executable |
-| `CLAUDE_GATEWAY_TIMEOUT_MS` | `300000` | Per-request wall-clock limit on the CLI process (300 seconds) |
-| `CLAUDE_GATEWAY_CONCURRENCY` | `4` | Maximum simultaneous CLI processes; excess requests queue FIFO |
+| `CLAUDE_GATEWAY_TIMEOUT_MS` | `300000` | Wall-clock limit on the CLI process; per-turn for tool-calling sessions |
+| `CLAUDE_GATEWAY_CONCURRENCY` | `4` | Maximum simultaneous *actively generating* CLI processes; excess requests queue FIFO. Parked tool sessions release their slot |
+| `CLAUDE_GATEWAY_MAX_SESSIONS` | `16` | Maximum live tool-calling sessions (active + parked CLI processes); at the cap, new tool-carrying requests get `429` |
+| `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` | `120000` | Maximum time a paused tool call waits for the client's result before the session is reaped |
+| `CLAUDE_GATEWAY_SESSION_IDLE_MS` | `600000` | Idle threshold after which a session with no pending tool calls is reaped |
 
 ## HTTP API
 
@@ -98,11 +101,32 @@ Response includes `usage` object with token counts and `cost_usd` (from CLI's ac
 }
 ```
 
+### `POST /mcp/{sessionId}`
+Internal MCP relay endpoint used by the spawned CLI during tool-calling sessions (see below). Not for direct client use: the unguessable 128-bit session id is the credential, so the endpoint bypasses the API-key gate. Unknown session ids get a JSON-RPC error.
+
 ### `GET /metrics`
 Prometheus-format metrics (requires auth if key is set). Tracks:
 - `llmgateway_requests_total` — counter of requests by path and status
 - `llmgateway_inflight_requests` — gauge of in-flight requests
 - `llmgateway_request_duration_seconds` — summary of request latency
+- `llmgateway_live_sessions` — gauge of live tool-calling sessions (active + parked)
+
+## Tool Calling (OpenAI functions) via MCP relay
+
+The gateway supports OpenAI-style tool calling (`tools` + `tool_choice` in the request, `finish_reason: "tool_calls"` in the response) even though `claude -p` normally executes tools itself. Design: [ADR 0001](docs/adr/0001-mcp-relay-tool-calling.md).
+
+How it works:
+
+1. A request carrying `tools` spawns the CLI pointed at the gateway's own `/mcp/{sessionId}` endpoint (`--strict-mcp-config --mcp-config ...`), registering the client's tool schemas as MCP tools for that session. Built-in tools stay disabled (`--tools ""`), so **nothing ever executes on the gateway host** — the relay only carries proposals out and results back in.
+2. When the model proposes tool calls, the turn is finalized from the CLI's stream output: the response carries `choices[0].message.tool_calls` (gateway-minted `call_...` ids) and `finish_reason: "tool_calls"`. The CLI process stays alive, parked on its MCP request, at ~0 CPU.
+3. The client executes the tools and sends the results back as `{"role":"tool","tool_call_id":...,"content":...}` messages. The gateway correlates them to the parked session **by tool_call_id**, resolves the paused MCP calls, and the CLI resumes — producing more text, another tool call, or the final answer.
+4. Parallel and sequential tool dispatch are both supported; parallel conversations never cross-wire because correlation is by globally unique id, not content.
+
+Streaming works too: text deltas stream as usual, tool calls arrive as a `delta.tool_calls` chunk followed by a `finish_reason: "tool_calls"` terminal chunk.
+
+Sessions are in-memory. If the gateway restarts (or a session is reaped by `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` / `CLAUDE_GATEWAY_SESSION_IDLE_MS`), a continuation is not lost: tool history in the request is flattened into the transcript as `[assistant called tool ...]` / `[tool ... returned]` markers (degraded fidelity, documented in the ADR) and a fresh session is started when the request carries `tools`.
+
+`tool_choice: "none"` skips tool registration and takes the stateless path. Requests without `tools` are completely unaffected.
 
 ## Structured Logging
 
@@ -120,9 +144,11 @@ The server listens for `SIGINT` and `SIGTERM`. On signal, in-flight requests are
 ## Implementation
 
 - **cmd/llm-gateway/main.go** — entry point, reads config from env, starts server
-- **internal/gateway/server.go** — HTTP routing, auth, concurrency semaphore, streaming, metrics
-- **internal/gateway/openai.go** — OpenAI wire format, prompt flattening, usage mapping
-- **internal/gateway/claudecli.go** — subprocess runner, stream-json parsing, lifecycle
+- **internal/gateway/server.go** — HTTP routing, auth, concurrency semaphore, streaming, metrics, tool-turn driving
+- **internal/gateway/openai.go** — OpenAI wire format, prompt flattening (incl. cold tool history), usage mapping
+- **internal/gateway/claudecli.go** — subprocess runner, stream-json parsing, lifecycle, session spawning
+- **internal/gateway/session.go** — tool-calling session table, pending-call correlation, sweeper
+- **internal/gateway/mcpserver.go** — the `/mcp/{sessionId}` JSON-RPC surface (initialize, tools/list, tools/call)
 - **internal/gateway/metrics.go** — Prometheus exposition format writer
 - **go.mod** — no runtime dependencies (stdlib only)
 
@@ -135,6 +161,7 @@ The Go implementation maintains API parity with the TypeScript version (see `src
 3. **Structured stderr logging** — JSON request logs after each completion
 4. **Constant-time auth** — API key comparison uses `crypto/subtle.ConstantTimeCompare`
 5. **Graceful shutdown** — SIGINT/SIGTERM handling allows in-flight requests to finish
+6. **Tool calling** — OpenAI-style tool calling via the MCP relay (ignored by the TypeScript version)
 
 ## Testing
 
@@ -142,6 +169,7 @@ The Go implementation maintains API parity with the TypeScript version (see `src
 go test ./... -v
 go test -run TestAPIParity -v ./...
 go test -run TestEnhancements -v ./...
+go test -run 'TestMCPRelay|TestSequentialDispatchNoDeadlock|TestParallelSessionsNoCrossWire|TestSessionLifecycle|TestColdHistoryFlattening' -v ./internal/gateway/
 ```
 
-Unit tests cover prompt flattening, model resolution, finish-reason mapping, and usage calculation. Integration tests (TestAPIParity, TestEnhancements) start the server against a stub CLI script and verify all endpoints and enhancements.
+Unit tests cover prompt flattening, model resolution, finish-reason mapping, and usage calculation. Integration tests (TestAPIParity, TestEnhancements) start the server against a stub CLI script and verify all endpoints and enhancements. The relay tests re-exec the test binary as a stub CLI that speaks real MCP over HTTP back to the gateway, covering the two-turn tool round trip, sequential-dispatch deadlock resistance, parallel-session correlation, session lifecycle/reaping, and cold-history flattening.

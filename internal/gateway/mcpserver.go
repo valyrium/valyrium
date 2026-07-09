@@ -16,10 +16,10 @@ type JSONRPCRequest struct {
 }
 
 type JSONRPCResponse struct {
-	Jsonrpc string      `json:"jsonrpc"`
-	Result  interface{} `json:"result,omitempty"`
+	Jsonrpc string        `json:"jsonrpc"`
+	Result  interface{}   `json:"result,omitempty"`
 	Error   *JSONRPCError `json:"error,omitempty"`
-	ID      interface{}    `json:"id,omitempty"`
+	ID      interface{}   `json:"id,omitempty"`
 }
 
 type JSONRPCError struct {
@@ -80,11 +80,11 @@ func (s *Server) handleMCPEndpoint(w http.ResponseWriter, r *http.Request, sessi
 
 	switch req.Method {
 	case "initialize":
-		s.handleMCPInitialize(w, req, sessionID)
+		s.handleMCPInitialize(w, req)
 	case "tools/list":
 		s.handleMCPToolsList(w, req, session)
 	case "tools/call":
-		s.handleMCPToolsCall(w, req, session, sessionID)
+		s.handleMCPToolsCall(w, req, session)
 	default:
 		resp := JSONRPCResponse{
 			Jsonrpc: "2.0",
@@ -98,12 +98,14 @@ func (s *Server) handleMCPEndpoint(w http.ResponseWriter, r *http.Request, sessi
 	}
 }
 
-func (s *Server) handleMCPInitialize(w http.ResponseWriter, req JSONRPCRequest, sessionID string) {
+func (s *Server) handleMCPInitialize(w http.ResponseWriter, req JSONRPCRequest) {
 	resp := JSONRPCResponse{
 		Jsonrpc: "2.0",
 		Result: map[string]interface{}{
 			"protocolVersion": "2025-03-26",
-			"capabilities":    map[string]interface{}{},
+			"capabilities": map[string]interface{}{
+				"tools": map[string]interface{}{},
+			},
 			"serverInfo": map[string]interface{}{
 				"name":    "llm-gateway-relay",
 				"version": "1.0.0",
@@ -141,7 +143,7 @@ type ToolsCallParams struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-func (s *Server) handleMCPToolsCall(w http.ResponseWriter, req JSONRPCRequest, session *Session, sessionID string) {
+func (s *Server) handleMCPToolsCall(w http.ResponseWriter, req JSONRPCRequest, session *Session) {
 	var params ToolsCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		resp := JSONRPCResponse{
@@ -156,23 +158,27 @@ func (s *Server) handleMCPToolsCall(w http.ResponseWriter, req JSONRPCRequest, s
 		return
 	}
 
-	session.Mu.Lock()
+	canonArgs := canonicalJSON(params.Arguments)
 
-	var toolCallID string
-	for id, call := range session.PendingCalls {
-		if call.Name == params.Name && string(call.Arguments) == string(params.Arguments) {
-			toolCallID = id
+	// The stream announcement precedes the CLI's tools/call at the CLI
+	// end, but the gateway's event pipeline may still be mid-flight; poll
+	// briefly before declaring a protocol violation.
+	var call *PendingToolCall
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		call = session.ClaimPendingCall(params.Name, canonArgs)
+		if call != nil || time.Now().After(deadline) {
 			break
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
-	if toolCallID == "" {
-		session.Mu.Unlock()
+	if call == nil {
 		resp := JSONRPCResponse{
 			Jsonrpc: "2.0",
 			Error: &JSONRPCError{
 				Code:    -32600,
-				Message: "tool call not found or already resolved",
+				Message: fmt.Sprintf("tool call %q was never announced on this session", params.Name),
 			},
 			ID: req.ID,
 		}
@@ -180,35 +186,21 @@ func (s *Server) handleMCPToolsCall(w http.ResponseWriter, req JSONRPCRequest, s
 		return
 	}
 
-	pendingCall := session.PendingCalls[toolCallID]
-	delete(session.PendingCalls, toolCallID)
-
-	result, ok := session.BufferedResults[toolCallID]
-	if ok {
-		delete(session.BufferedResults, toolCallID)
-		session.LastActivity = time.Now()
-		session.Mu.Unlock()
-
+	// Park: hold the JSON-RPC request open until the client's follow-up
+	// request supplies the result (or the session is reaped).
+	result, ok := <-call.Resolver
+	if !ok {
 		resp := JSONRPCResponse{
 			Jsonrpc: "2.0",
-			Result: map[string]interface{}{
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": result,
-					},
-				},
+			Error: &JSONRPCError{
+				Code:    -32600,
+				Message: "session reaped before a tool result arrived",
 			},
 			ID: req.ID,
 		}
 		s.sendJSON(w, 200, resp)
 		return
 	}
-
-	session.LastActivity = time.Now()
-	session.Mu.Unlock()
-
-	result = <-pendingCall.Resolver
 
 	resp := JSONRPCResponse{
 		Jsonrpc: "2.0",
