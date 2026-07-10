@@ -45,6 +45,14 @@ that matters should be captured here or already committed in the repo.
 
 ## What's NOT done / needs attention
 
+0. **There's an open release-please PR right now**: #3, "chore(main): release
+   1.1.0", proposing the version bump for the `feat: add launchd service
+   block to the Homebrew formula` commit. It's sitting unmerged — merge it
+   (rebase-and-merge) whenever you want v1.1.0 cut. Merging it will tag
+   `v1.1.0` and trigger the same GoReleaser flow described in point 1 below
+   (GitHub release will succeed; the Homebrew tap push will fail until that
+   secret exists, and needs the same manual follow-up).
+
 1. **`HOMEBREW_TAP_GITHUB_TOKEN` secret is not set** on `valyrium/valyrium`.
    The default `GITHUB_TOKEN` GitHub Actions gives a workflow is scoped to the
    repo it runs in only — it cannot push to the separate `homebrew-tap` repo.
