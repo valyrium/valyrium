@@ -35,6 +35,16 @@ valyrium listening on http://127.0.0.1:8787 (default model: sonnet, concurrency:
 
 `valyrium --version` (or `-v`) prints the build version and exits without starting the server.
 
+The binary has three subcommands. `valyrium` on its own is the gateway, as it always
+was; `valyrium serve` names it explicitly. The other two are the halves of the reverse
+tunnel described in [Remote access](#remote-access-tunnel--relay):
+
+| Subcommand | Runs where | Purpose |
+|---|---|---|
+| `valyrium` / `valyrium serve` | anywhere | The gateway (default) |
+| `valyrium relay` | a public host | Terminates public TLS, pipes traffic down a tunnel |
+| `valyrium tunnel` | beside a gateway | Dials the relay, forwards its traffic to the local gateway |
+
 Then use any OpenAI client:
 
 ```bash
@@ -77,6 +87,65 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_RESUME_MAX` | `32` | Maximum resumable conversations held in memory when `CLAUDE_GATEWAY_RESUME` is on |
 | `CLAUDE_GATEWAY_EXPOSE_REASONING` | `false` | If `true`, thinking blocks from the CLI stream are relayed as `reasoning_content` (on the message and on streaming deltas) instead of being dropped |
 | `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` | Path to the JSON ledger holding persisted token/cost totals, one entry per calendar day. Set to `off` to disable usage tracking (no file, no usage gauges). If the file cannot be opened, the gateway logs a warning and runs with tracking disabled |
+
+## Remote access: tunnel + relay
+
+To reach a gateway that has no public IP — a home network, no inbound port forwarding —
+run `valyrium relay` on a public host and `valyrium tunnel` next to the gateway. The
+tunnel dials *out* to the relay, and the relay pipes inbound public traffic back down
+that connection:
+
+```
+cloud client ──HTTPS──▶ valyrium relay ──mux/TLS──▶ valyrium tunnel ──▶ valyrium
+                        (public host)               (home network)      (127.0.0.1:8787)
+```
+
+The relay terminates TLS with Let's Encrypt certificates (`golang.org/x/crypto/acme/autocert`)
+and needs a DNS record pointed at it. Past the TLS handshake it is a byte pipe: it never
+parses the HTTP it carries, so streaming responses stream. Design and tradeoffs are in
+[docs/adr/0002-tunnel-relay.md](docs/adr/0002-tunnel-relay.md).
+
+> [!WARNING]
+> **The relay authenticates the tunnel, not the callers reaching it.** `VALYRIUM_TUNNEL_TOKEN`
+> stops a stranger from registering as your tunnel endpoint; it does nothing about who
+> calls the public hostname. The gateway's own `CLAUDE_GATEWAY_API_KEY` is the only thing
+> gating the API — **a tunnel in front of a gateway with no API key set is an open gateway
+> on the public internet**, backed by your Claude subscription. Set `CLAUDE_GATEWAY_API_KEY`
+> before you set up a tunnel.
+
+On the public host:
+
+```bash
+VALYRIUM_TUNNEL_DOMAIN=relay.example.com \
+VALYRIUM_TUNNEL_TOKEN=$(openssl rand -hex 32) \
+  valyrium relay     # binds :443 and :80; needs CAP_NET_BIND_SERVICE or root
+```
+
+Next to the gateway:
+
+```bash
+VALYRIUM_TUNNEL_RELAY_ADDR=relay.example.com:443 \
+VALYRIUM_TUNNEL_DOMAIN=relay.example.com \
+VALYRIUM_TUNNEL_TOKEN=<the same token> \
+  valyrium tunnel
+```
+
+| Variable | Where | Default | Meaning |
+|---|---|---|---|
+| `VALYRIUM_TUNNEL_TOKEN` | both | *(required)* | Shared secret authenticating the tunnel client to the relay. The relay refuses to start without it |
+| `VALYRIUM_TUNNEL_DOMAIN` | relay | *(required)* | Public hostname the certificate and `HostPolicy` are pinned to |
+| `VALYRIUM_TUNNEL_DOMAIN` | tunnel | *(unset)* | Hostname to verify the relay's certificate against, when it differs from the address dialed |
+| `VALYRIUM_TUNNEL_CERT_CACHE_DIR` | relay | `$XDG_CACHE_HOME/valyrium/autocert` | Where issued certificates persist across restarts. Losing these re-requests on every start and trips Let's Encrypt rate limits |
+| `VALYRIUM_TUNNEL_LISTEN_ADDR` | relay | `:443` | Public TLS listen address |
+| `VALYRIUM_TUNNEL_HTTP_ADDR` | relay | `:80` | HTTP-01 challenge listener; also redirects to HTTPS |
+| `VALYRIUM_TUNNEL_RELAY_ADDR` | tunnel | *(required)* | `host:port` of the relay |
+| `VALYRIUM_TUNNEL_LOCAL_ADDR` | tunnel | `127.0.0.1:8787` | The gateway to forward to |
+
+While no tunnel client is registered, the relay answers public callers with `503` and the
+gateway's usual JSON error envelope. The tunnel reconnects on its own, with exponential
+backoff, when the control connection drops.
+
+Single-tenant in v1: one relay fronts one gateway, on one hostname.
 
 ## HTTP API
 
