@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -759,9 +760,13 @@ func newCompletionID() string {
 
 func randomHex(length int) string {
 	const hexChars = "0123456789abcdef"
+	raw := make([]byte, length)
+	if _, err := rand.Read(raw); err != nil {
+		panic(fmt.Sprintf("failed to read random bytes: %v", err))
+	}
 	b := make([]byte, length)
-	for i := range b {
-		b[i] = hexChars[i%len(hexChars)]
+	for i, v := range raw {
+		b[i] = hexChars[v%byte(len(hexChars))]
 	}
 	return string(b)
 }
