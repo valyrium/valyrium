@@ -132,17 +132,13 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 	}
 
 	apiKey := r.Header.Get("x-api-key")
-	if subtle.ConstantTimeCompare([]byte(apiKey), []byte(s.config.APIKey)) == 1 {
-		return true
-	}
-
-	return false
+	return subtle.ConstantTimeCompare([]byte(apiKey), []byte(s.config.APIKey)) == 1
 }
 
 func (s *Server) sendJSON(w http.ResponseWriter, status int, body interface{}) {
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (s *Server) sendError(w http.ResponseWriter, status int, message string, errType string) {
@@ -238,7 +234,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"completion_tokens": completionTokens,
 		}
 		data, _ := json.Marshal(logEntry)
-		fmt.Fprintf(os.Stderr, "%s\n", string(data))
+		_, _ = fmt.Fprintf(os.Stderr, "%s\n", string(data))
 	}()
 
 	body, err := s.readBody(r, 32*1024*1024)
@@ -292,6 +288,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if instruction := responseFormatInstruction(req.ResponseFormat); instruction != "" {
+		systemPrompt += "\n\n" + instruction
+	}
+
 	if err = s.slots.Acquire(r.Context()); err != nil {
 		statusCode = 503
 		s.sendError(w, 503, "service temporarily unavailable", "api_error")
@@ -325,6 +325,25 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if requiresJSON(req.ResponseFormat) {
+		if validationErr := validateJSONResponse(completion.Text, req.ResponseFormat); validationErr != nil {
+			retryCompletion, retryErr := RunClaude(RunClaudeOptions{
+				ClaudeBin:    s.config.ClaudeBin,
+				Prompt:       jsonRetryPrompt(prompt, completion.Text, validationErr),
+				SystemPrompt: systemPrompt,
+				Model:        model,
+				Effort:       effort,
+				TimeoutMs:    s.config.TimeoutMS,
+				Signal:       r.Context(),
+			})
+			// A failed retry is not fatal: the first attempt is still a
+			// valid (if non-conforming) response to return to the client.
+			if retryErr == nil {
+				completion = retryCompletion
+			}
+		}
+	}
+
 	promptTokens = completion.Usage.InputTokens + completion.Usage.CacheReadInputTokens + completion.Usage.CacheCreationInputTokens
 	completionTokens = completion.Usage.OutputTokens
 	s.sendJSON(w, 200, CompletionResponseWithCost(id, created, *completion))
@@ -341,7 +360,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	write := func(data interface{}) {
 		if data != nil {
 			b, _ := json.Marshal(data)
-			fmt.Fprintf(w, "data: %s\n\n", string(b))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(b))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
@@ -382,7 +401,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	usage := ToOpenAIUsage(completion.Usage, completion.CostUSD)
 	finish := MapFinishReason(completion.StopReason)
 	write(NewStreamChunk(id, created, completion.Model, StreamChunkDelta{}, &finish, &usage))
-	fmt.Fprint(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
 type toolResultMessage struct {
@@ -617,7 +636,7 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 
 	write := func(data interface{}) {
 		b, _ := json.Marshal(data)
-		fmt.Fprintf(w, "data: %s\n\n", string(b))
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(b))
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -653,7 +672,7 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 		s.sessions.ReapSession(sess.ID)
 		finish := MapFinishReason(outcome.stopReason)
 		write(NewStreamChunk(id, created, outcome.model, StreamChunkDelta{}, &finish, &usage))
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		return 200
 	}
 
@@ -674,7 +693,7 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 	write(NewStreamChunk(id, created, outcome.model, StreamChunkDelta{"tool_calls": deltaCalls}, nil, nil))
 	finish := "tool_calls"
 	write(NewStreamChunk(id, created, outcome.model, StreamChunkDelta{}, &finish, &usage))
-	fmt.Fprint(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	return 200
 }
 
@@ -708,9 +727,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.WritePrometheus(w)
 
-	fmt.Fprintf(w, "# HELP llmgateway_live_sessions Number of live tool-calling CLI sessions (active + parked)\n")
-	fmt.Fprintf(w, "# TYPE llmgateway_live_sessions gauge\n")
-	fmt.Fprintf(w, "llmgateway_live_sessions %d\n", s.sessions.GetSessionCount())
+	_, _ = fmt.Fprintf(w, "# HELP llmgateway_live_sessions Number of live tool-calling CLI sessions (active + parked)\n")
+	_, _ = fmt.Fprintf(w, "# TYPE llmgateway_live_sessions gauge\n")
+	_, _ = fmt.Fprintf(w, "llmgateway_live_sessions %d\n", s.sessions.GetSessionCount())
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

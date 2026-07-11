@@ -123,6 +123,15 @@ Response includes `usage` object with token counts and `cost_usd` (from CLI's ac
 }
 ```
 
+#### `response_format` (structured output)
+
+`response_format: {"type": "json_object"}` and `response_format: {"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}` are supported by prompt injection, not a native CLI mode:
+
+1. The gateway appends an instruction to the system prompt telling the model to reply with only a JSON object (and, for `json_schema`, includes the schema verbatim in that instruction).
+2. Non-streaming requests are validated: if the reply isn't parseable JSON (or isn't a JSON object, for `json_object`), the gateway retries once with the validation error appended to the prompt, then returns whichever attempt it has — the retry is best-effort, not a hard guarantee.
+3. Streaming requests get the same prompt instruction but are not validated or retried (text is already in flight by the time an invalid reply would be detectable).
+4. `json_schema` validation checks that the reply is valid JSON; it does not fully validate against the schema's constraints (required properties, types, etc.) beyond that.
+
 ### `POST /mcp/{sessionId}`
 Internal MCP relay endpoint used by the spawned CLI during tool-calling sessions (see below). Not for direct client use: the unguessable 128-bit session id is the credential, so the endpoint bypasses the API-key gate. Unknown session ids get a JSON-RPC error.
 

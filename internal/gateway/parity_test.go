@@ -17,7 +17,7 @@ func TestAPIParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stubBin := filepath.Join(tmpDir, "claude-stub")
 	stubScript := `#!/bin/sh
@@ -343,7 +343,7 @@ func TestEnhancements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stubBin := filepath.Join(tmpDir, "claude-stub")
 	stubScript := `#!/bin/sh
@@ -633,7 +633,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	os.Stderr = w
 	fn()
 	os.Stderr = orig
-	w.Close()
+	_ = w.Close()
 
 	data, err := io.ReadAll(r)
 	if err != nil {
