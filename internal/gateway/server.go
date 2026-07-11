@@ -352,7 +352,8 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	*completionTokens = completion.Usage.OutputTokens
 
 	usage := ToOpenAIUsage(completion.Usage, completion.CostUSD)
-	write(NewStreamChunk(id, created, completion.Model, StreamChunkDelta{}, nil, &usage))
+	finish := MapFinishReason(completion.StopReason)
+	write(NewStreamChunk(id, created, completion.Model, StreamChunkDelta{}, &finish, &usage))
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 

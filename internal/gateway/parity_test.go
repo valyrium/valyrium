@@ -502,6 +502,123 @@ exit 0
 	})
 }
 
+// TestNonToolStreamingEmitsFinishReason covers a regression where the
+// terminal chunk of a non-tool streaming response always sent
+// finish_reason: null, because handleStreamingResponse never mapped the
+// completion's stop_reason before writing it.
+func TestNonToolStreamingEmitsFinishReason(t *testing.T) {
+	server := newParityTestServer(t, `#!/bin/sh
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}}'
+echo '{"type":"result","result":"hello","stop_reason":"end_turn","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0
+`)
+
+	chunks := runStreamingChatRequest(t, server)
+	finalChunk := chunks[len(chunks)-1]
+	if finalChunk.Choices[0].FinishReason == nil {
+		t.Fatal("expected the terminal chunk to carry a non-nil finish_reason")
+	}
+	if *finalChunk.Choices[0].FinishReason != "stop" {
+		t.Errorf("expected finish_reason 'stop', got %q", *finalChunk.Choices[0].FinishReason)
+	}
+}
+
+// TestStreamingFinishReasonMapsLength confirms the terminal streaming chunk
+// maps a max_tokens stop_reason to the OpenAI-shaped "length" finish_reason,
+// not just the default "stop".
+func TestStreamingFinishReasonMapsLength(t *testing.T) {
+	server := newParityTestServer(t, `#!/bin/sh
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}}'
+echo '{"type":"result","result":"hello","stop_reason":"max_tokens","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0
+`)
+
+	chunks := runStreamingChatRequest(t, server)
+	finalChunk := chunks[len(chunks)-1]
+	if finalChunk.Choices[0].FinishReason == nil {
+		t.Fatal("expected the terminal chunk to carry a non-nil finish_reason")
+	}
+	if *finalChunk.Choices[0].FinishReason != "length" {
+		t.Errorf("expected finish_reason 'length', got %q", *finalChunk.Choices[0].FinishReason)
+	}
+}
+
+// newParityTestServer writes stubScript as an executable claude CLI stand-in
+// and returns a Server configured to invoke it.
+func newParityTestServer(t *testing.T, stubScript string) *Server {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "valyrium-test-")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("failed to remove temp dir: %v", err)
+		}
+	})
+
+	stubBin := filepath.Join(tmpDir, "claude-stub")
+	if err := os.WriteFile(stubBin, []byte(stubScript), 0755); err != nil {
+		t.Fatalf("failed to write stub script: %v", err)
+	}
+
+	return NewServer(Config{
+		Port:         0,
+		Host:         "127.0.0.1",
+		APIKey:       "test-key",
+		DefaultModel: "sonnet",
+		Models:       []string{"sonnet", "opus", "haiku"},
+		ClaudeBin:    stubBin,
+		TimeoutMS:    30000,
+		Concurrency:  4,
+	})
+}
+
+// runStreamingChatRequest issues a streaming chat completion request against
+// server and returns the parsed SSE chunks up to (excluding) [DONE].
+func runStreamingChatRequest(t *testing.T, server *Server) []StreamChunk {
+	t.Helper()
+
+	reqBody := ChatCompletionRequest{
+		Model:  "sonnet",
+		Stream: true,
+		Messages: []OpenAIMessage{
+			{Role: "user", Content: "Say hi"},
+		},
+	}
+
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("content-type", "application/json")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	chunks := make([]StreamChunk, 0)
+	for _, line := range lines {
+		if line == "" || line == "data: [DONE]" {
+			continue
+		}
+		if strings.HasPrefix(line, "data: ") {
+			jsonStr := strings.TrimPrefix(line, "data: ")
+			var chunk StreamChunk
+			if err := json.Unmarshal([]byte(jsonStr), &chunk); err == nil {
+				chunks = append(chunks, chunk)
+			}
+		}
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected at least 1 chunk")
+	}
+	return chunks
+}
+
 // captureStderr redirects os.Stderr for the duration of fn (which must run
 // and complete its writes synchronously) and returns the last non-empty
 // line written, which is the structured request log entry.
