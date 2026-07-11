@@ -27,6 +27,12 @@ func TestMain(m *testing.M) {
 }
 
 func runClaudeStub(mode string) int {
+	// The resume stub drives the stateless path: it speaks no MCP, it just
+	// records how it was invoked (see resume_test.go).
+	if mode == "resume" {
+		return runResumeStub()
+	}
+
 	var mcpConfig string
 	for i, a := range os.Args {
 		if a == "--mcp-config" && i+1 < len(os.Args) {

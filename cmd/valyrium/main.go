@@ -97,6 +97,17 @@ func main() {
 		}
 	}
 
+	resumeSessions := false
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CLAUDE_GATEWAY_RESUME"))) {
+	case "1", "true", "yes", "on":
+		resumeSessions = true
+	}
+
+	resumeMaxEntries := 32
+	if m, err := strconv.Atoi(os.Getenv("CLAUDE_GATEWAY_RESUME_MAX")); err == nil {
+		resumeMaxEntries = m
+	}
+
 	config := gateway.Config{
 		Port:                 port,
 		Host:                 host,
@@ -111,6 +122,8 @@ func main() {
 		SessionIdleMS:        sessionIdleMS,
 		ContextLengths:       contextLengths,
 		DefaultContextLength: defaultContextLength,
+		ResumeSessions:       resumeSessions,
+		ResumeMaxEntries:     resumeMaxEntries,
 	}
 
 	server := gateway.NewServer(config)

@@ -73,6 +73,8 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` | `120000` | Maximum time a paused tool call waits for the client's result before the session is reaped |
 | `CLAUDE_GATEWAY_SESSION_IDLE_MS` | `600000` | Idle threshold after which a session with no pending tool calls is reaped |
 | `CLAUDE_GATEWAY_CONTEXT_LENGTH` | *(unset)* | Context window reported in `GET /v1/models`. Either a bare integer used as the fallback for ids that don't match a known Claude family (`sonnet`/`opus`/`haiku` default to `200000`), or a comma-separated `id=length` list for per-model overrides, e.g. `opus=1000000,my-proxy=32000` |
+| `CLAUDE_GATEWAY_RESUME` | `false` | Opt into cross-request conversation continuity (`1`/`true`/`yes`/`on`). See [Conversation continuity](#conversation-continuity-experimental) |
+| `CLAUDE_GATEWAY_RESUME_MAX` | `32` | Maximum resumable conversations held in memory when `CLAUDE_GATEWAY_RESUME` is on |
 
 ## HTTP API
 
@@ -161,6 +163,22 @@ Streaming works too: text deltas stream as usual, tool calls arrive as a `delta.
 Sessions are in-memory. If the gateway restarts (or a session is reaped by `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` / `CLAUDE_GATEWAY_SESSION_IDLE_MS`), a continuation is not lost: tool history in the request is flattened into the transcript as `[assistant called tool ...]` / `[tool ... returned]` markers (degraded fidelity, documented in the ADR) and a fresh session is started when the request carries `tools`.
 
 `tool_choice: "none"` skips tool registration and takes the stateless path. Requests without `tools` are completely unaffected.
+
+## Conversation continuity (experimental)
+
+By default every conversational turn is stateless: the gateway spawns a fresh CLI process and flattens the whole history into a text transcript (`[user]:` / `[assistant]:` markers). That is faithful enough, but the history is re-sent cold on every turn, so cost and latency grow with conversation length.
+
+Setting `CLAUDE_GATEWAY_RESUME=1` turns on continuity. The gateway fingerprints the conversation prefix (every message through the last assistant reply, plus the model and reasoning effort) and remembers which CLI session produced it. When the next turn arrives with that same prefix, the gateway resumes the CLI session (`--resume <id>`) and sends **only the new user message** — the real turn structure stays inside the CLI, and the provider can cache the prompt.
+
+Anything that does not match falls back to today's flatten-and-replay, so a miss is only a cost, never an error:
+
+- gateway restart (the map is in memory only)
+- edited or trimmed history — a rewritten earlier turn changes the fingerprint
+- a different model or `reasoning_effort` for the same history
+- eviction from the LRU (`CLAUDE_GATEWAY_RESUME_MAX`, default 32 conversations)
+- any request carrying tool history, which uses the MCP relay session mechanism above instead
+
+Operational cost: resumed conversations leave CLI sessions persisted on disk (the flag drops `--no-session-persistence`), one per remembered conversation, bounded by `CLAUDE_GATEWAY_RESUME_MAX`. It stays off by default until it has been proven in production.
 
 ## Structured Logging
 

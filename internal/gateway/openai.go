@@ -90,6 +90,9 @@ type Completion struct {
 	StopReason *string
 	Usage      Usage
 	CostUSD    *float64
+	// CLISessionID is the CLI's own session id, reported on the stream when
+	// the run persisted its session. Empty on non-persisted runs.
+	CLISessionID string
 }
 
 const defaultSystemPrompt = "You are a helpful assistant."

@@ -32,6 +32,13 @@ type Config struct {
 	SessionIdleMS        int            // idle session reap threshold (default 600000)
 	ContextLengths       map[string]int // per-model id overrides for /v1/models context_length
 	DefaultContextLength int            // fallback for ids with no override and no known family match
+
+	// ResumeSessions opts into cross-request conversation continuity: a
+	// turn whose history matches a stored prefix resumes the CLI session
+	// that produced it instead of replaying a flattened transcript.
+	// Default off.
+	ResumeSessions   bool
+	ResumeMaxEntries int // bound on the resumable-session LRU (default 32)
 }
 
 type Semaphore struct {
@@ -88,6 +95,7 @@ type Server struct {
 	slots        *Semaphore
 	metrics      *Metrics
 	sessions     *SessionManager
+	resume       *ResumeStore // nil when resume is disabled
 	mcpBaseURL   string
 	listeners    []net.Listener
 	httpServer   *http.Server
@@ -104,11 +112,21 @@ func NewServer(config Config) *Server {
 	if config.SessionIdleMS <= 0 {
 		config.SessionIdleMS = 600000
 	}
+	if config.ResumeMaxEntries <= 0 {
+		config.ResumeMaxEntries = 32
+	}
+
+	var resume *ResumeStore
+	if config.ResumeSessions {
+		resume = NewResumeStore(config.ResumeMaxEntries)
+	}
+
 	return &Server{
 		config:     config,
 		slots:      NewSemaphore(config.Concurrency),
 		metrics:    NewMetrics(),
 		sessions:   NewSessionManager(config.MaxSessions, config.ToolTimeoutMS, config.SessionIdleMS),
+		resume:     resume,
 		mcpBaseURL: fmt.Sprintf("http://127.0.0.1:%d", config.Port),
 	}
 }
@@ -281,11 +299,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	systemPrompt, prompt, err := BuildPrompt(req.Messages)
-	if err != nil {
-		statusCode = 400
-		s.sendError(w, 400, err.Error(), "invalid_request_error")
-		return
+	// Cross-request continuity (issue #13): on a prefix hit the CLI session
+	// that produced the conversation so far is resumed and only the new user
+	// message is sent; otherwise the whole history is flattened and replayed.
+	plan := s.planResumeTurn(req, model, effort)
+	systemPrompt, prompt := plan.systemPrompt, plan.prompt
+	if !plan.hit {
+		var err error
+		systemPrompt, prompt, err = BuildPrompt(req.Messages)
+		if err != nil {
+			statusCode = 400
+			s.sendError(w, 400, err.Error(), "invalid_request_error")
+			return
+		}
 	}
 
 	if instruction := responseFormatInstruction(req.ResponseFormat); instruction != "" {
@@ -300,18 +326,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer s.slots.Release()
 
 	if req.Stream {
-		s.handleStreamingResponse(w, r, id, created, model, effort, systemPrompt, prompt, &promptTokens, &completionTokens)
+		s.handleStreamingResponse(w, r, req, plan, id, created, model, effort, systemPrompt, prompt, &promptTokens, &completionTokens)
 		return
 	}
 
 	completion, err := RunClaude(RunClaudeOptions{
-		ClaudeBin:    s.config.ClaudeBin,
-		Prompt:       prompt,
-		SystemPrompt: systemPrompt,
-		Model:        model,
-		Effort:       effort,
-		TimeoutMs:    s.config.TimeoutMS,
-		Signal:       r.Context(),
+		ClaudeBin:       s.config.ClaudeBin,
+		Prompt:          prompt,
+		SystemPrompt:    systemPrompt,
+		Model:           model,
+		Effort:          effort,
+		TimeoutMs:       s.config.TimeoutMS,
+		Signal:          r.Context(),
+		Persist:         plan.persist,
+		ResumeSessionID: plan.cliSessionID,
 	})
 
 	if err != nil {
@@ -344,12 +372,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.recordResumableSession(req, model, effort, completion)
+
 	promptTokens = completion.Usage.InputTokens + completion.Usage.CacheReadInputTokens + completion.Usage.CacheCreationInputTokens
 	completionTokens = completion.Usage.OutputTokens
 	s.sendJSON(w, 200, CompletionResponseWithCost(id, created, *completion))
 }
 
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, id string, created int64, model, effort, systemPrompt, prompt string, promptTokens, completionTokens *int) {
+func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, plan resumeTurn, id string, created int64, model, effort, systemPrompt, prompt string, promptTokens, completionTokens *int) {
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
@@ -370,13 +400,15 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	write(NewStreamChunk(id, created, model, StreamChunkDelta{"role": "assistant", "content": ""}, nil, nil))
 
 	completion, err := RunClaude(RunClaudeOptions{
-		ClaudeBin:    s.config.ClaudeBin,
-		Prompt:       prompt,
-		SystemPrompt: systemPrompt,
-		Model:        model,
-		Effort:       effort,
-		TimeoutMs:    s.config.TimeoutMS,
-		Signal:       r.Context(),
+		ClaudeBin:       s.config.ClaudeBin,
+		Prompt:          prompt,
+		SystemPrompt:    systemPrompt,
+		Model:           model,
+		Effort:          effort,
+		TimeoutMs:       s.config.TimeoutMS,
+		Signal:          r.Context(),
+		Persist:         plan.persist,
+		ResumeSessionID: plan.cliSessionID,
 		OnTextDelta: func(text string) {
 			write(NewStreamChunk(id, created, model, StreamChunkDelta{"content": text}, nil, nil))
 		},
@@ -394,6 +426,8 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 		})
 		return
 	}
+
+	s.recordResumableSession(req, model, effort, completion)
 
 	*promptTokens = completion.Usage.InputTokens + completion.Usage.CacheReadInputTokens + completion.Usage.CacheCreationInputTokens
 	*completionTokens = completion.Usage.OutputTokens
@@ -450,6 +484,63 @@ func referencedToolCallIDs(messages []OpenAIMessage) []string {
 		}
 	}
 	return ids
+}
+
+// resumeTurn is how a stateless request will reach the CLI: either resuming
+// the session that produced this conversation's prefix (hit), or a fresh run
+// whose session is kept so the *next* turn can resume it (persist).
+type resumeTurn struct {
+	persist      bool
+	hit          bool
+	cliSessionID string
+	systemPrompt string
+	prompt       string
+}
+
+// planResumeTurn looks the conversation prefix up in the resumable-session
+// LRU. Any miss — resume disabled, gateway restart, evicted entry, edited
+// history, tool history — leaves hit false, and the caller replays the
+// flattened transcript exactly as it always has.
+func (s *Server) planResumeTurn(req ChatCompletionRequest, model, effort string) resumeTurn {
+	if s.resume == nil || !isResumableConversation(req.Messages) {
+		return resumeTurn{}
+	}
+
+	plan := resumeTurn{persist: true}
+
+	prefix, userText, ok := splitResumeTurn(req.Messages)
+	if !ok {
+		return plan
+	}
+
+	cliSessionID, hit := s.resume.Get(resumeFingerprint(prefix, model, effort))
+	if !hit {
+		return plan
+	}
+
+	plan.hit = true
+	plan.cliSessionID = cliSessionID
+	plan.systemPrompt = systemPromptOf(req.Messages)
+	plan.prompt = userText
+	return plan
+}
+
+// recordResumableSession stores the CLI session that just answered under the
+// fingerprint of the conversation *including* that answer — the exact history
+// a well-behaved client sends back on the next turn.
+func (s *Server) recordResumableSession(req ChatCompletionRequest, model, effort string, completion *Completion) {
+	if s.resume == nil || completion == nil || completion.CLISessionID == "" {
+		return
+	}
+	if !isResumableConversation(req.Messages) {
+		return
+	}
+
+	next := make([]OpenAIMessage, 0, len(req.Messages)+1)
+	next = append(next, req.Messages...)
+	next = append(next, OpenAIMessage{Role: "assistant", Content: completion.Text})
+
+	s.resume.Put(resumeFingerprint(next, model, effort), completion.CLISessionID)
 }
 
 func toolChoiceIsNone(toolChoice interface{}) bool {
