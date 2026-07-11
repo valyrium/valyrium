@@ -46,6 +46,7 @@ type streamJsonLine struct {
 		Delta *struct {
 			Type       string  `json:"type"`
 			Text       string  `json:"text"`
+			Thinking   string  `json:"thinking"`
 			StopReason *string `json:"stop_reason"`
 		} `json:"delta"`
 		Usage *Usage `json:"usage"`
@@ -68,6 +69,9 @@ type RunClaudeOptions struct {
 	// ResumeSessionID continues an existing CLI session instead of
 	// starting a new one. Only meaningful with Persist.
 	ResumeSessionID string
+
+	ExposeReasoning  bool
+	OnReasoningDelta func(string)
 }
 
 func RunClaude(opts RunClaudeOptions) (*Completion, error) {
@@ -123,18 +127,19 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 	}
 
 	var (
-		streamedText string
-		resultText   *string
-		model        string
-		stopReason   *string
-		costUsd      *float64
-		usage        Usage
-		cliSessionID string
-		sawResult    bool
-		stderrTail   strings.Builder
-		settledOnce  sync.Once
-		settled      bool
-		settleMutex  sync.Mutex
+		streamedText  string
+		reasoningText string
+		resultText    *string
+		model         string
+		stopReason    *string
+		costUsd       *float64
+		usage         Usage
+		cliSessionID  string
+		sawResult     bool
+		stderrTail    strings.Builder
+		settledOnce   sync.Once
+		settled       bool
+		settleMutex   sync.Mutex
 	)
 
 	model = opts.Model
@@ -201,6 +206,11 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 					streamedText += parsed.Event.Delta.Text
 					if opts.OnTextDelta != nil {
 						opts.OnTextDelta(parsed.Event.Delta.Text)
+					}
+				} else if opts.ExposeReasoning && parsed.Event.Delta.Type == "thinking_delta" && parsed.Event.Delta.Thinking != "" {
+					reasoningText += parsed.Event.Delta.Thinking
+					if opts.OnReasoningDelta != nil {
+						opts.OnReasoningDelta(parsed.Event.Delta.Thinking)
 					}
 				}
 			} else if parsed.Event.Type == "message_delta" && parsed.Event.Delta != nil && parsed.Event.Delta.StopReason != nil {
@@ -270,25 +280,27 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 	}
 
 	completion := &Completion{
-		Text:         text,
-		Model:        model,
-		StopReason:   stopReason,
-		Usage:        usage,
-		CostUSD:      costUsd,
-		CLISessionID: cliSessionID,
+		Text:          text,
+		ReasoningText: reasoningText,
+		Model:         model,
+		StopReason:    stopReason,
+		Usage:         usage,
+		CostUSD:       costUsd,
+		CLISessionID:  cliSessionID,
 	}
 
 	return finish(completion, nil)
 }
 
 type SessionRunOptions struct {
-	ClaudeBin     string
-	Prompt        string
-	SystemPrompt  string
-	Model         string
-	Effort        string
-	MCPURL        string
-	ToolTimeoutMS int
+	ClaudeBin       string
+	Prompt          string
+	SystemPrompt    string
+	Model           string
+	Effort          string
+	MCPURL          string
+	ToolTimeoutMS   int
+	ExposeReasoning bool
 }
 
 // mcpRelayServerName is the MCP server name the gateway registers itself
@@ -358,11 +370,11 @@ func StartClaudeSession(sm *SessionManager, sess *Session, opts SessionRunOption
 	sess.Cmd = cmd
 	sess.Mu.Unlock()
 
-	go relaySessionStream(sm, sess, stdout, cmd)
+	go relaySessionStream(sm, sess, stdout, cmd, opts.ExposeReasoning)
 	return nil
 }
 
-func relaySessionStream(sm *SessionManager, sess *Session, stdout io.Reader, cmd *exec.Cmd) {
+func relaySessionStream(sm *SessionManager, sess *Session, stdout io.Reader, cmd *exec.Cmd, exposeReasoning bool) {
 	defer close(sess.Events)
 
 	scanner := bufio.NewScanner(stdout)
@@ -388,6 +400,9 @@ func relaySessionStream(sm *SessionManager, sess *Session, stdout io.Reader, cmd
 			if parsed.Event.Type == "content_block_delta" && parsed.Event.Delta != nil &&
 				parsed.Event.Delta.Type == "text_delta" && parsed.Event.Delta.Text != "" {
 				sess.Events <- SessionEvent{Type: "text", Text: parsed.Event.Delta.Text}
+			} else if exposeReasoning && parsed.Event.Type == "content_block_delta" && parsed.Event.Delta != nil &&
+				parsed.Event.Delta.Type == "thinking_delta" && parsed.Event.Delta.Thinking != "" {
+				sess.Events <- SessionEvent{Type: "reasoning", Text: parsed.Event.Delta.Thinking}
 			} else if parsed.Event.Type == "message_delta" {
 				ev := SessionEvent{Type: "stop", Usage: parsed.Event.Usage}
 				if parsed.Event.Delta != nil {

@@ -39,6 +39,8 @@ type Config struct {
 	// Default off.
 	ResumeSessions   bool
 	ResumeMaxEntries int // bound on the resumable-session LRU (default 32)
+
+	ExposeReasoning bool // if true, relay CLI thinking blocks as reasoning_content
 }
 
 type Semaphore struct {
@@ -340,6 +342,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Signal:          r.Context(),
 		Persist:         plan.persist,
 		ResumeSessionID: plan.cliSessionID,
+		ExposeReasoning: s.config.ExposeReasoning,
 	})
 
 	if err != nil {
@@ -411,6 +414,10 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 		ResumeSessionID: plan.cliSessionID,
 		OnTextDelta: func(text string) {
 			write(NewStreamChunk(id, created, model, StreamChunkDelta{"content": text}, nil, nil))
+		},
+		ExposeReasoning: s.config.ExposeReasoning,
+		OnReasoningDelta: func(text string) {
+			write(NewStreamChunk(id, created, model, StreamChunkDelta{"reasoning_content": text}, nil, nil))
 		},
 	})
 
@@ -549,21 +556,22 @@ func toolChoiceIsNone(toolChoice interface{}) bool {
 }
 
 type turnOutcome struct {
-	text       string
-	calls      []*PendingToolCall
-	model      string
-	stopReason *string
-	usage      Usage
-	costUSD    *float64
-	final      bool
-	err        error
+	text          string
+	reasoningText string
+	calls         []*PendingToolCall
+	model         string
+	stopReason    *string
+	usage         Usage
+	costUSD       *float64
+	final         bool
+	err           error
 }
 
 // collectTurn drains session events until the turn ends: either the model
 // announced tool calls and stopped with stop_reason "tool_use" (finalized
 // from the stream alone — never from MCP traffic, ADR 0001 §4), or the
 // whole run ended with a result line.
-func (s *Server) collectTurn(ctx context.Context, sess *Session, onDelta func(string)) turnOutcome {
+func (s *Server) collectTurn(ctx context.Context, sess *Session, onDelta func(string), onReasoningDelta func(string)) turnOutcome {
 	var out turnOutcome
 	sawToolStop := false
 	timeout := time.NewTimer(time.Duration(s.config.TimeoutMS) * time.Millisecond)
@@ -581,6 +589,11 @@ func (s *Server) collectTurn(ctx context.Context, sess *Session, onDelta func(st
 				out.text += ev.Text
 				if onDelta != nil {
 					onDelta(ev.Text)
+				}
+			case "reasoning":
+				out.reasoningText += ev.Text
+				if onReasoningDelta != nil {
+					onReasoningDelta(ev.Text)
 				}
 			case "tool_calls":
 				if ev.Model != "" {
@@ -652,13 +665,14 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 		}
 
 		err = StartClaudeSession(s.sessions, sess, SessionRunOptions{
-			ClaudeBin:     s.config.ClaudeBin,
-			Prompt:        prompt,
-			SystemPrompt:  systemPrompt,
-			Model:         model,
-			Effort:        effort,
-			MCPURL:        fmt.Sprintf("%s/mcp/%s", s.mcpBaseURL, sess.ID),
-			ToolTimeoutMS: s.config.ToolTimeoutMS,
+			ClaudeBin:       s.config.ClaudeBin,
+			Prompt:          prompt,
+			SystemPrompt:    systemPrompt,
+			Model:           model,
+			Effort:          effort,
+			MCPURL:          fmt.Sprintf("%s/mcp/%s", s.mcpBaseURL, sess.ID),
+			ToolTimeoutMS:   s.config.ToolTimeoutMS,
+			ExposeReasoning: s.config.ExposeReasoning,
 		})
 		if err != nil {
 			s.sessions.ReapSession(sess.ID)
@@ -680,7 +694,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 		return s.streamToolTurn(w, r, sess, id, created, model, promptTokens, completionTokens)
 	}
 
-	outcome := s.collectTurn(r.Context(), sess, nil)
+	outcome := s.collectTurn(r.Context(), sess, nil, nil)
 	if outcome.model == "" {
 		outcome.model = model
 	}
@@ -701,11 +715,12 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	if outcome.final {
 		s.sessions.ReapSession(sess.ID)
 		completion := Completion{
-			Text:       outcome.text,
-			Model:      outcome.model,
-			StopReason: outcome.stopReason,
-			Usage:      outcome.usage,
-			CostUSD:    outcome.costUSD,
+			Text:          outcome.text,
+			ReasoningText: outcome.reasoningText,
+			Model:         outcome.model,
+			StopReason:    outcome.stopReason,
+			Usage:         outcome.usage,
+			CostUSD:       outcome.costUSD,
 		}
 		s.sendJSON(w, 200, CompletionResponseWithCost(id, created, completion))
 		return 200
@@ -714,7 +729,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	// Tool-call turn: respond and leave the session (and its parked CLI
 	// process) alive for the follow-up request. The concurrency slot is
 	// released by the caller's defer when this response goes out.
-	s.sendJSON(w, 200, NewToolCallResponse(id, created, outcome.model, outcome.text, outcome.calls, ToOpenAIUsage(outcome.usage, outcome.costUSD)))
+	s.sendJSON(w, 200, NewToolCallResponse(id, created, outcome.model, outcome.text, outcome.reasoningText, outcome.calls, ToOpenAIUsage(outcome.usage, outcome.costUSD)))
 	return 200
 }
 
@@ -737,6 +752,8 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 
 	outcome := s.collectTurn(r.Context(), sess, func(text string) {
 		write(NewStreamChunk(id, created, model, StreamChunkDelta{"content": text}, nil, nil))
+	}, func(text string) {
+		write(NewStreamChunk(id, created, model, StreamChunkDelta{"reasoning_content": text}, nil, nil))
 	})
 	if outcome.model == "" {
 		outcome.model = model

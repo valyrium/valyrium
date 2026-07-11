@@ -65,6 +65,7 @@ All configuration is via environment variables, read once at startup into a
 | `CLAUDE_GATEWAY_MAX_SESSIONS` | `16` | Maximum live tool-calling sessions (active + parked CLI processes); at the cap, new tool-carrying requests get `429` |
 | `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` | `120000` | Maximum time a paused tool call waits for the client's result before the session is reaped |
 | `CLAUDE_GATEWAY_SESSION_IDLE_MS` | `600000` | Idle threshold after which a session with no pending tool calls is reaped |
+| `CLAUDE_GATEWAY_EXPOSE_REASONING` | `false` | If `true`, thinking blocks from the CLI stream are relayed as `reasoning_content` (on the message and on streaming deltas) instead of being dropped |
 
 ## 4. HTTP surface
 

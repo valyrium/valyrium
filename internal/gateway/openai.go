@@ -85,11 +85,12 @@ type Usage struct {
 }
 
 type Completion struct {
-	Text       string
-	Model      string
-	StopReason *string
-	Usage      Usage
-	CostUSD    *float64
+	Text          string
+	ReasoningText string
+	Model         string
+	StopReason    *string
+	Usage         Usage
+	CostUSD       *float64
 	// CLISessionID is the CLI's own session id, reported on the stream when
 	// the run persisted its session. Empty on non-persisted runs.
 	CLISessionID string
@@ -266,8 +267,9 @@ func ToOpenAIUsage(usage Usage, costUSD *float64) OpenAIUsage {
 }
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type Choice struct {
@@ -296,8 +298,9 @@ func CompletionResponseWithCost(id string, created int64, completion Completion)
 			{
 				Index: 0,
 				Message: Message{
-					Role:    "assistant",
-					Content: completion.Text,
+					Role:             "assistant",
+					Content:          completion.Text,
+					ReasoningContent: completion.ReasoningText,
 				},
 				FinishReason: MapFinishReason(completion.StopReason),
 				Logprobs:     nil,
@@ -311,9 +314,10 @@ func CompletionResponseWithCost(id string, created int64, completion Completion)
 // tool calls: content is null (or the text produced alongside), and
 // tool_calls carries the gateway-minted call ids.
 type ToolCallMessage struct {
-	Role      string      `json:"role"`
-	Content   interface{} `json:"content"`
-	ToolCalls []ToolCall  `json:"tool_calls"`
+	Role             string      `json:"role"`
+	Content          interface{} `json:"content"`
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall  `json:"tool_calls"`
 }
 
 type ToolCallChoice struct {
@@ -332,7 +336,7 @@ type ToolCallCompletionResponse struct {
 	Usage   OpenAIUsage      `json:"usage"`
 }
 
-func NewToolCallResponse(id string, created int64, model, text string, calls []*PendingToolCall, usage OpenAIUsage) ToolCallCompletionResponse {
+func NewToolCallResponse(id string, created int64, model, text, reasoningText string, calls []*PendingToolCall, usage OpenAIUsage) ToolCallCompletionResponse {
 	var content interface{}
 	if text != "" {
 		content = text
@@ -346,9 +350,10 @@ func NewToolCallResponse(id string, created int64, model, text string, calls []*
 			{
 				Index: 0,
 				Message: ToolCallMessage{
-					Role:      "assistant",
-					Content:   content,
-					ToolCalls: ToolCallsFromPending(calls),
+					Role:             "assistant",
+					Content:          content,
+					ReasoningContent: reasoningText,
+					ToolCalls:        ToolCallsFromPending(calls),
 				},
 				FinishReason: "tool_calls",
 				Logprobs:     nil,

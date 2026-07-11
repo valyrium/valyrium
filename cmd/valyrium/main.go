@@ -108,6 +108,11 @@ func main() {
 		resumeMaxEntries = m
 	}
 
+	exposeReasoning := false
+	if v, err := strconv.ParseBool(os.Getenv("CLAUDE_GATEWAY_EXPOSE_REASONING")); err == nil {
+		exposeReasoning = v
+	}
+
 	config := gateway.Config{
 		Port:                 port,
 		Host:                 host,
@@ -124,6 +129,7 @@ func main() {
 		DefaultContextLength: defaultContextLength,
 		ResumeSessions:       resumeSessions,
 		ResumeMaxEntries:     resumeMaxEntries,
+		ExposeReasoning:      exposeReasoning,
 	}
 
 	server := gateway.NewServer(config)
