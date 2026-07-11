@@ -193,6 +193,39 @@ func TestToOpenAIUsage(t *testing.T) {
 	}
 }
 
+func TestUsageIncludesCachedTokens(t *testing.T) {
+	usage := Usage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheReadInputTokens:     7,
+		CacheCreationInputTokens: 3,
+	}
+
+	result := ToOpenAIUsage(usage, nil)
+
+	if result.PromptTokensDetails.CachedTokens != 7 {
+		t.Errorf("prompt_tokens_details.cached_tokens: expected 7, got %d", result.PromptTokensDetails.CachedTokens)
+	}
+	if result.CacheWriteTokens != 3 {
+		t.Errorf("cache_write_tokens: expected 3, got %d", result.CacheWriteTokens)
+	}
+}
+
+func TestUsageTotalsRemainConsistent(t *testing.T) {
+	usage := Usage{
+		InputTokens:              10,
+		OutputTokens:             5,
+		CacheReadInputTokens:     7,
+		CacheCreationInputTokens: 3,
+	}
+
+	result := ToOpenAIUsage(usage, nil)
+
+	if result.TotalTokens != result.PromptTokens+result.CompletionTokens {
+		t.Errorf("total_tokens: expected %d, got %d", result.PromptTokens+result.CompletionTokens, result.TotalTokens)
+	}
+}
+
 func ptr[T any](v T) *T {
 	return &v
 }
