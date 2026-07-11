@@ -3,7 +3,6 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,26 +29,6 @@ func newResponseFormatTestServer(t *testing.T, stubScript string) *Server {
 	}
 
 	return NewServer(config)
-}
-
-func postChatCompletion(t *testing.T, server *Server, req ChatCompletionRequest) (int, map[string]interface{}) {
-	t.Helper()
-	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("failed to marshal request: %v", err)
-	}
-
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
-	httpReq.Header.Set("Authorization", "Bearer test-key")
-	httpReq.Header.Set("content-type", "application/json")
-	w := httptest.NewRecorder()
-	server.ServeHTTP(w, httpReq)
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-	return w.Code, result
 }
 
 func messageContent(t *testing.T, result map[string]interface{}) string {
