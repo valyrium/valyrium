@@ -97,6 +97,15 @@ Request body example:
 }
 ```
 
+#### Reasoning effort
+
+The gateway maps reasoning effort to the CLI's `--effort` flag from either of two request shapes:
+
+- Top-level `reasoning_effort: "low" | "medium" | "high" | "xhigh" | "max"` (OpenAI-style).
+- An OpenRouter-style `reasoning` object: `{"reasoning": {"enabled": true, "effort": "medium"}}`.
+
+If both are present, `reasoning_effort` wins. `{"reasoning": {"enabled": false}}` is ignored entirely — no `--effort` flag is passed, regardless of any `effort` value also present in the object — rather than being mapped to the lowest effort level.
+
 Response includes `usage` object with token counts and `cost_usd` (from CLI's accounting):
 ```json
 {

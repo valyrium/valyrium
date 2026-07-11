@@ -45,6 +45,16 @@ type ChatCompletionRequest struct {
 	TopP                float64         `json:"top_p"`
 	MaxTokens           int             `json:"max_tokens"`
 	MaxCompletionTokens int             `json:"max_completion_tokens"`
+	Reasoning           *ReasoningSpec  `json:"reasoning"`
+}
+
+// ReasoningSpec mirrors the OpenRouter-style extra-body `reasoning` object
+// some OpenAI-compatible clients send instead of (or alongside) the
+// top-level `reasoning_effort` field. `reasoning_effort` takes precedence
+// when both are present.
+type ReasoningSpec struct {
+	Enabled *bool  `json:"enabled,omitempty"`
+	Effort  string `json:"effort,omitempty"`
 }
 
 type TextContentPart struct {

@@ -181,6 +181,33 @@ func (s *Server) resolveModel(requested string) string {
 	return s.config.DefaultModel
 }
 
+var validReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+
+// resolveEffort maps the OpenAI-compatible reasoning_effort field and the
+// OpenRouter-style reasoning object to the CLI's --effort flag. Explicit
+// reasoning_effort always wins. A reasoning object with enabled:false is
+// ignored entirely (no --effort flag), rather than mapped to the lowest
+// effort, since the caller asked for reasoning to be off, not minimal.
+func resolveEffort(reasoningEffort string, reasoning *ReasoningSpec) string {
+	if reasoningEffort != "" {
+		if validReasoningEfforts[reasoningEffort] {
+			return reasoningEffort
+		}
+		return ""
+	}
+
+	if reasoning == nil {
+		return ""
+	}
+	if reasoning.Enabled != nil && !*reasoning.Enabled {
+		return ""
+	}
+	if validReasoningEfforts[reasoning.Effort] {
+		return reasoning.Effort
+	}
+	return ""
+}
+
 func (s *Server) readBody(r *http.Request, maxSize int) (string, error) {
 	r.Body = http.MaxBytesReader(nil, r.Body, int64(maxSize))
 	data, err := io.ReadAll(r.Body)
@@ -229,13 +256,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model = s.resolveModel(req.Model)
-	effort := ""
-	if req.ReasoningEffort != "" {
-		efforts := map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
-		if efforts[req.ReasoningEffort] {
-			effort = req.ReasoningEffort
-		}
-	}
+	effort := resolveEffort(req.ReasoningEffort, req.Reasoning)
 
 	id := newCompletionID()
 	created := time.Now().Unix()
