@@ -466,12 +466,17 @@ exit 0
 
 		time.Sleep(10 * time.Millisecond)
 
+		// Serving this request forks the stub CLI, so how long it takes is a
+		// property of the machine's load, not of the gateway. The bound is only
+		// here to catch a request that never finishes at all; it deliberately
+		// sits above the gateway's own TimeoutMS so that a request the gateway
+		// gave up on reports its 504 rather than timing out here.
 		select {
 		case <-done:
 			if w.Code != 200 {
 				t.Errorf("expected 200, got %d", w.Code)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(60 * time.Second):
 			t.Error("request did not complete in time")
 		}
 	})
