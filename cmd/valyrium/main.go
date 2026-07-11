@@ -76,18 +76,41 @@ func main() {
 		sessionIdleMS = t
 	}
 
+	// CLAUDE_GATEWAY_CONTEXT_LENGTH is either a bare integer (default for
+	// ids with no known Claude family match) or a comma-separated
+	// id=length list of per-model overrides, e.g. "opus=1000000,my-proxy=32000".
+	contextLengths := make(map[string]int)
+	defaultContextLength := 0
+	if v := os.Getenv("CLAUDE_GATEWAY_CONTEXT_LENGTH"); v != "" {
+		if strings.Contains(v, "=") {
+			for _, pair := range strings.Split(v, ",") {
+				id, lenStr, ok := strings.Cut(strings.TrimSpace(pair), "=")
+				if !ok {
+					continue
+				}
+				if n, err := strconv.Atoi(strings.TrimSpace(lenStr)); err == nil {
+					contextLengths[strings.TrimSpace(id)] = n
+				}
+			}
+		} else if n, err := strconv.Atoi(v); err == nil {
+			defaultContextLength = n
+		}
+	}
+
 	config := gateway.Config{
-		Port:          port,
-		Host:          host,
-		APIKey:        apiKey,
-		DefaultModel:  defaultModel,
-		Models:        models,
-		ClaudeBin:     claudeBin,
-		TimeoutMS:     timeoutMS,
-		Concurrency:   concurrency,
-		MaxSessions:   maxSessions,
-		ToolTimeoutMS: toolTimeoutMS,
-		SessionIdleMS: sessionIdleMS,
+		Port:                 port,
+		Host:                 host,
+		APIKey:               apiKey,
+		DefaultModel:         defaultModel,
+		Models:               models,
+		ClaudeBin:            claudeBin,
+		TimeoutMS:            timeoutMS,
+		Concurrency:          concurrency,
+		MaxSessions:          maxSessions,
+		ToolTimeoutMS:        toolTimeoutMS,
+		SessionIdleMS:        sessionIdleMS,
+		ContextLengths:       contextLengths,
+		DefaultContextLength: defaultContextLength,
 	}
 
 	server := gateway.NewServer(config)

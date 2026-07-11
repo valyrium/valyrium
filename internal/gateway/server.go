@@ -18,17 +18,19 @@ import (
 )
 
 type Config struct {
-	Port          int
-	Host          string
-	APIKey        string
-	DefaultModel  string
-	Models        []string
-	ClaudeBin     string
-	TimeoutMS     int
-	Concurrency   int
-	MaxSessions   int // cap on live tool-calling CLI sessions (default 16)
-	ToolTimeoutMS int // max wait for a client tool result (default 120000)
-	SessionIdleMS int // idle session reap threshold (default 600000)
+	Port                 int
+	Host                 string
+	APIKey               string
+	DefaultModel         string
+	Models               []string
+	ClaudeBin            string
+	TimeoutMS            int
+	Concurrency          int
+	MaxSessions          int            // cap on live tool-calling CLI sessions (default 16)
+	ToolTimeoutMS        int            // max wait for a client tool result (default 120000)
+	SessionIdleMS        int            // idle session reap threshold (default 600000)
+	ContextLengths       map[string]int // per-model id overrides for /v1/models context_length
+	DefaultContextLength int            // fallback for ids with no override and no known family match
 }
 
 type Semaphore struct {
@@ -636,11 +638,14 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	var models []ModelInfo
 	for _, id := range s.config.Models {
+		length := resolveContextLength(id, s.config.ContextLengths, s.config.DefaultContextLength)
 		models = append(models, ModelInfo{
-			ID:      id,
-			Object:  "model",
-			Created: 0,
-			OwnedBy: "anthropic",
+			ID:            id,
+			Object:        "model",
+			Created:       0,
+			OwnedBy:       "anthropic",
+			ContextLength: length,
+			MaxModelLen:   length,
 		})
 	}
 

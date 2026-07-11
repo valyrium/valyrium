@@ -390,4 +390,9 @@ type ModelInfo struct {
 	Object  string `json:"object"`
 	Created int    `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	// ContextLength and MaxModelLen carry the same value under the two
+	// field names OpenAI-compatible clients probe for when auto-detecting
+	// a model's context window (see ADR-less issue #5).
+	ContextLength int `json:"context_length,omitempty"`
+	MaxModelLen   int `json:"max_model_len,omitempty"`
 }

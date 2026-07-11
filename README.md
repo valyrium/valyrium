@@ -72,6 +72,7 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_MAX_SESSIONS` | `16` | Maximum live tool-calling sessions (active + parked CLI processes); at the cap, new tool-carrying requests get `429` |
 | `CLAUDE_GATEWAY_TOOL_TIMEOUT_MS` | `120000` | Maximum time a paused tool call waits for the client's result before the session is reaped |
 | `CLAUDE_GATEWAY_SESSION_IDLE_MS` | `600000` | Idle threshold after which a session with no pending tool calls is reaped |
+| `CLAUDE_GATEWAY_CONTEXT_LENGTH` | *(unset)* | Context window reported in `GET /v1/models`. Either a bare integer used as the fallback for ids that don't match a known Claude family (`sonnet`/`opus`/`haiku` default to `200000`), or a comma-separated `id=length` list for per-model overrides, e.g. `opus=1000000,my-proxy=32000` |
 
 ## HTTP API
 
@@ -79,7 +80,7 @@ All configuration is via environment variables, read at startup:
 Liveness probe (no auth required). Returns `{"ok":true}`.
 
 ### `GET /v1/models`
-List configured models. Requires auth if `CLAUDE_GATEWAY_API_KEY` is set.
+List configured models. Requires auth if `CLAUDE_GATEWAY_API_KEY` is set. Each entry includes `context_length` and `max_model_len` (same value, two names) so OpenAI-compatible clients that auto-detect context windows don't fall back to a guessed default. See `CLAUDE_GATEWAY_CONTEXT_LENGTH` above to override.
 
 ### `POST /v1/chat/completions`
 OpenAI Chat Completions endpoint. Supports both streaming (`stream:true`) and non-streaming.
