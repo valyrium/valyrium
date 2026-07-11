@@ -242,6 +242,37 @@ func (sess *Session) ClaimPendingCall(name, canonArgs string) *PendingToolCall {
 	return nil
 }
 
+// ReapSuperseded reaps every live session that the incoming request's
+// history names by tool_call_id but does not resume — keep is the session
+// this request continues, if any. A client that abandons a tool loop (the
+// end user interrupts and sends a new turn instead of the tool results)
+// otherwise strands the parked session: it holds a MaxSessions slot and a
+// live CLI process until the idle sweeper fires, minutes later. Only
+// unresolved calls are indexed in toolCallIDToSession, so a hit here means
+// the session is genuinely still waiting on a result that is not coming.
+// Returns the number of sessions reaped.
+func (sm *SessionManager) ReapSuperseded(toolCallIDs []string, keep *Session) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	superseded := make(map[string]struct{})
+	for _, toolCallID := range toolCallIDs {
+		sessionID, ok := sm.toolCallIDToSession[toolCallID]
+		if !ok {
+			continue
+		}
+		if keep != nil && sessionID == keep.ID {
+			continue
+		}
+		superseded[sessionID] = struct{}{}
+	}
+
+	for sessionID := range superseded {
+		sm.reapSessionLocked(sessionID)
+	}
+	return len(superseded)
+}
+
 func (sm *SessionManager) ReapSession(sessionID string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
