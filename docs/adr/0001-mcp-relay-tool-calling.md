@@ -266,6 +266,15 @@ Timeouts (both enforced by one background sweeper):
 - `CLAUDE_GATEWAY_SESSION_IDLE_MS` (default 600000) — reaps sessions
   with no pending calls and no activity (client abandoned the
   conversation after a completed turn).
+- Supersession — reaped inline, not by the sweeper. A request whose
+  history names a live session's pending `tool_call_id`s but does not
+  carry their results has abandoned that loop (an interactive frontend
+  interrupting mid-call, replying with a new user turn instead). It takes
+  the cold path (§3), and the session it walked away from is reaped as
+  the superseding request is served, rather than squatting on a
+  `MAX_SESSIONS` slot until the tool timeout. Correlation is by minted
+  `tool_call_id` (§6), so unrelated concurrent sessions — including
+  byte-identical parallel conversations — are never touched.
 - The existing `CLAUDE_GATEWAY_TIMEOUT_MS` becomes **per-turn** for
   sessions (spawn-to-turn-end, resume-to-turn-end), not per-process —
   a healthy multi-turn session legitimately outlives 300s of wall

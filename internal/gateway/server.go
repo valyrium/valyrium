@@ -268,6 +268,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	contSess, toolResults := s.findContinuationSession(req.Messages)
 	wantsTools := len(req.Tools) > 0 && !toolChoiceIsNone(req.ToolChoice)
 
+	// A request whose history names live tool calls it is not answering has
+	// superseded them: the client abandoned that loop. Reap those sessions
+	// before serving this one, so an interrupted tool loop frees its slot
+	// now rather than at the sweeper's timeout (ADR 0001 §7).
+	s.sessions.ReapSuperseded(referencedToolCallIDs(req.Messages), contSess)
+
 	if contSess != nil || wantsTools {
 		if err := s.slots.Acquire(r.Context()); err != nil {
 			statusCode = 503
@@ -407,6 +413,24 @@ func (s *Server) findContinuationSession(messages []OpenAIMessage) (*Session, []
 		}
 	}
 	return nil, results
+}
+
+// referencedToolCallIDs collects every tool_call_id the request's history
+// mentions, from both the assistant's tool_calls blocks and tool result
+// messages. Ids the gateway did not mint simply miss the session index.
+func referencedToolCallIDs(messages []OpenAIMessage) []string {
+	var ids []string
+	for _, m := range messages {
+		if m.ToolCallID != "" {
+			ids = append(ids, m.ToolCallID)
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				ids = append(ids, tc.ID)
+			}
+		}
+	}
+	return ids
 }
 
 func toolChoiceIsNone(toolChoice interface{}) bool {
