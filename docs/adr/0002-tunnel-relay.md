@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed. Not yet implemented.
+Accepted. Implemented in `internal/tunnel` (`mux.go`, `relay.go`, `tunnel.go`),
+wired to the `valyrium relay` and `valyrium tunnel` subcommands. The open
+questions below are resolved at the end of this document.
 
 ## Context
 
@@ -127,6 +129,12 @@ in this space (frp, chisel, inlets) use.
 | `VALYRIUM_TUNNEL_RELAY_ADDR` | tunnel | `host:443` of the relay |
 | `VALYRIUM_TUNNEL_LOCAL_ADDR` | tunnel | Default `127.0.0.1:8787` |
 
+Two more were added during implementation, both to keep the listen addresses
+out of the code: `VALYRIUM_TUNNEL_LISTEN_ADDR` (relay, default `:443`) and
+`VALYRIUM_TUNNEL_HTTP_ADDR` (relay, default `:80`). `VALYRIUM_TUNNEL_DOMAIN`
+is also read by the tunnel client, where it sets the name the relay's
+certificate is verified against when that differs from the address dialed.
+
 ### 5. Security posture
 
 - The relay is a dumb pipe: it never terminates or inspects the
@@ -161,13 +169,51 @@ in this space (frp, chisel, inlets) use.
 - No built-in rate limiting on the public side beyond `valyrium`'s
   existing concurrency semaphore once traffic reaches it.
 
-## Open questions to verify before implementation
+## Resolved open questions
 
-1. Confirm the mux protocol doesn't need per-stream flow control for v1
-   (i.e., a single slow client can't be used to exhaust relay memory) —
-   likely fine given personal single-tenant use, but bound stream buffer
-   sizes regardless.
-2. Confirm exact backoff/reconnect parameters for `valyrium tunnel`
-   against real-world home ISP disconnect/reassign behavior.
-3. Decide whether `valyrium relay` should refuse to start if
-   `VALYRIUM_TUNNEL_TOKEN` is unset (recommended: yes, hard-fail).
+1. **Per-stream flow control: not in v1, but memory is bounded.** A frame's
+   payload is capped at 64 KiB and `ReadFrame` rejects a larger *declared*
+   length before allocating, so a four-byte header cannot be turned into an
+   arbitrary allocation. Each stream buffers 16 frames (~1 MiB); past that,
+   delivery blocks. The honest consequence is that a stalled consumer
+   backpressures the *whole* control connection rather than just its own
+   stream — head-of-line blocking, not memory growth, and not data loss.
+   For a single-tenant personal tunnel where every consumer is an `io.Copy`
+   into a TCP socket that always eventually drains, that is the right trade.
+   Revisit with per-stream windows if this ever fronts many concurrent slow
+   clients.
+2. **Backoff: 1s doubling to 30s**, reset once a connection has survived
+   longer than the maximum backoff (so a relay that accepts and instantly
+   drops cannot be hot-looped). No jitter: a single-tenant tunnel has no
+   thundering herd to avoid. `PING` every 30s against a 90s idle deadline on
+   both ends, which is inside the idle timeout of typical consumer NAT.
+   Not yet validated against a real ISP disconnect/reassign — the parameters
+   are a starting point, and `TestTunnelReconnectsAfterDrop` only proves the
+   client recovers from a relay that vanishes.
+3. **Yes, hard-fail.** `NewRelay` refuses to build a relay with no token, so
+   `valyrium relay` exits non-zero rather than starting up ready to hand
+   traffic to whoever connects first. Serving public TLS additionally
+   requires `VALYRIUM_TUNNEL_DOMAIN` and `VALYRIUM_TUNNEL_CERT_CACHE_DIR`;
+   both are checked before anything binds.
+
+## Decided during implementation
+
+- **The relay does not offer `h2`.** ALPN is `vtun/1`, `http/1.1`, and
+  `acme-tls/1` (the last so TLS-ALPN-01 challenges keep working). The byte
+  pipe itself is protocol-agnostic and would carry h2 happily, but the one
+  response the relay generates *itself* — the 503 when no tunnel client is
+  registered — is written by hand as HTTP/1.1, and an h2 client could not
+  read it.
+- **The 503 path reads the caller's request before answering it.** Writing
+  the response the instant the handshake completes looks harmless and is
+  not: to any HTTP client that pools connections, a response that arrives
+  before the request was written is "unsolicited", and it is discarded in
+  favour of a transport error. So for that one connection the relay behaves
+  like an HTTP server — read the request, drain up to 1 MiB of body so an
+  uploading caller is not reset mid-write, then answer.
+- **Frame types include `AUTH`/`AUTH_OK`**, used only for the handshake that
+  precedes the mux. Both ends read them unbuffered, straight off the
+  connection, so no byte of the mux stream that follows is swallowed into a
+  buffer the multiplexer will never look in.
+- **Stream ids are parity-split** (relay odd, tunnel even) so both ends may
+  open streams without ever colliding, even though only the relay does.

@@ -41,14 +41,17 @@ Design constraints that shape everything below:
 
 | File | Responsibility |
 |---|---|
-| `cmd/valyrium/main.go` | Entry point: reads config from env, starts the server |
+| `cmd/valyrium/main.go` | Entry point: subcommand dispatch (`serve`, `relay`, `tunnel`), reads config from env |
 | `internal/gateway/server.go` | HTTP routing, auth, concurrency semaphore, SSE framing, tool-turn driving, graceful shutdown |
 | `internal/gateway/openai.go` | OpenAI wire types, message-to-prompt flattening (incl. cold tool history), finish-reason and usage mapping |
 | `internal/gateway/claudecli.go` | Subprocess runner: spawns `claude -p`, parses its `stream-json` output, enforces timeout/abort, session-mode spawning |
 | `internal/gateway/session.go` | Tool-calling session table: pending-call correlation, idle/timeout sweeper, `MAX_SESSIONS` accounting |
 | `internal/gateway/mcpserver.go` | The `/mcp/{sessionId}` JSON-RPC surface (`initialize`, `tools/list`, `tools/call`) |
 | `internal/gateway/metrics.go` | Prometheus exposition format writer |
-| `go.mod` | Stdlib plus `golang.org/x/...` — no third-party modules |
+| `internal/tunnel/mux.go` | Stream multiplexer: frame codec, per-stream buffering, keepalive (§12) |
+| `internal/tunnel/relay.go` | `valyrium relay`: public TLS via `autocert`, ALPN demux, token auth, byte pipe |
+| `internal/tunnel/tunnel.go` | `valyrium tunnel`: dials the relay, forwards its streams to the local gateway |
+| `go.mod` | Stdlib plus `golang.org/x/...` — no other third-party modules |
 
 ## 3. Configuration
 
