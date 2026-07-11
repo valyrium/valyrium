@@ -75,6 +75,7 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_CONTEXT_LENGTH` | *(unset)* | Context window reported in `GET /v1/models`. Either a bare integer used as the fallback for ids that don't match a known Claude family (`sonnet`/`opus`/`haiku` default to `200000`), or a comma-separated `id=length` list for per-model overrides, e.g. `opus=1000000,my-proxy=32000` |
 | `CLAUDE_GATEWAY_RESUME` | `false` | Opt into cross-request conversation continuity (`1`/`true`/`yes`/`on`). See [Conversation continuity](#conversation-continuity-experimental) |
 | `CLAUDE_GATEWAY_RESUME_MAX` | `32` | Maximum resumable conversations held in memory when `CLAUDE_GATEWAY_RESUME` is on |
+| `CLAUDE_GATEWAY_EXPOSE_REASONING` | `false` | If `true`, thinking blocks from the CLI stream are relayed as `reasoning_content` (on the message and on streaming deltas) instead of being dropped |
 
 ## HTTP API
 

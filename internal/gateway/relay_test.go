@@ -47,6 +47,15 @@ func runClaudeStub(mode string) int {
 		return 1
 	}
 
+	if mode == "reasoning" {
+		// A plain (non-tool-calling) turn spawned via RunClaude, which never
+		// sets --mcp-config: emits a thinking delta ahead of its final text
+		// answer, exercising the reasoning_content relay.
+		fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Let me think about this."}}}`)
+		stubEmitFinal("The answer is 42")
+		return 0
+	}
+
 	var cfg struct {
 		McpServers map[string]struct {
 			URL string `json:"url"`
@@ -248,9 +257,10 @@ type chatResponse struct {
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
-			Role      string      `json:"role"`
-			Content   interface{} `json:"content"`
-			ToolCalls []ToolCall  `json:"tool_calls"`
+			Role             string      `json:"role"`
+			Content          interface{} `json:"content"`
+			ReasoningContent string      `json:"reasoning_content"`
+			ToolCalls        []ToolCall  `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage OpenAIUsage `json:"usage"`

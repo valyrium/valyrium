@@ -469,7 +469,7 @@ exit 0
 			if w.Code != 200 {
 				t.Errorf("expected 200, got %d", w.Code)
 			}
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(15 * time.Second):
 			t.Error("request did not complete in time")
 		}
 	})

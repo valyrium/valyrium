@@ -22,7 +22,7 @@ type ToolUseBlock struct {
 // reader goroutine produces these; the HTTP handler driving the current
 // turn consumes them.
 type SessionEvent struct {
-	Type       string // "text" | "tool_calls" | "stop" | "run_end"
+	Type       string // "text" | "reasoning" | "tool_calls" | "stop" | "run_end"
 	Text       string
 	Calls      []*PendingToolCall
 	StopReason *string
