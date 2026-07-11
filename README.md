@@ -2,7 +2,7 @@
 
 # valyrium
 
-An OpenAI-compatible HTTP gateway that routes requests to the Claude Code CLI (`claude -p`). Any tool built against the OpenAI Chat Completions API can use Claude models with this gateway. Dependencies are limited to the Go standard library and `golang.org/x/...` packages, plus one named exception (`go.etcd.io/bbolt`, for persisted usage accounting) — no other third-party modules.
+An OpenAI-compatible HTTP gateway that routes requests to the Claude Code CLI (`claude -p`). Any tool built against the OpenAI Chat Completions API can use Claude models with this gateway. Dependencies are limited to the Go standard library and `golang.org/x/...` packages — no third-party modules at all.
 
 A built-in dashboard (`GET /dashboard`) is designed in docs/design/dashboard.html — see docs/adr/0003-embedded-dashboard.md and docs/adr/0004-usage-persistence.md.
 
@@ -76,7 +76,7 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_RESUME` | `false` | Opt into cross-request conversation continuity (`1`/`true`/`yes`/`on`). See [Conversation continuity](#conversation-continuity-experimental) |
 | `CLAUDE_GATEWAY_RESUME_MAX` | `32` | Maximum resumable conversations held in memory when `CLAUDE_GATEWAY_RESUME` is on |
 | `CLAUDE_GATEWAY_EXPOSE_REASONING` | `false` | If `true`, thinking blocks from the CLI stream are relayed as `reasoning_content` (on the message and on streaming deltas) instead of being dropped |
-| `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` | Path to the [bbolt](https://github.com/etcd-io/bbolt) file holding persisted token/cost totals. Set to `off` to disable usage tracking (no file, no usage gauges). If the file cannot be opened, the gateway logs a warning and runs with tracking disabled |
+| `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` | Path to the JSON ledger holding persisted token/cost totals, one entry per calendar day. Set to `off` to disable usage tracking (no file, no usage gauges). If the file cannot be opened, the gateway logs a warning and runs with tracking disabled |
 
 ## HTTP API
 

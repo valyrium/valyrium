@@ -20,10 +20,13 @@ OpenAI client ──HTTP──▶ valyrium ──spawn──▶ claude -p --outp
 Design constraints that shape everything below:
 
 - **Minimal runtime dependencies.** Go standard library plus `golang.org/x/...`
-  packages only — no third-party modules from outside the Go project, with
-  one named exception: `go.etcd.io/bbolt`, authorized for the persisted
-  usage store (docs/adr/0004-usage-persistence.md). New exceptions require
-  the same explicit authorization, not silent addition.
+  packages only — no third-party modules from outside the Go project. This is
+  checked against `go list -m all`, which reports what every dependency's
+  `go.mod` *declares*, not just what gets compiled: a module that drags its own
+  test and CLI dependencies into the graph violates the policy even if none of
+  their code ships. `go.etcd.io/bbolt` was briefly authorized for the persisted
+  usage store and then withdrawn for exactly that reason
+  (docs/adr/0004-usage-persistence.md).
 - **Stateless per request, by default.** Each completion is one fresh CLI
   process; no sessions, no shared state beyond a concurrency semaphore.
   Requests carrying `tools` are the one exception (§9): they hold a session
@@ -45,7 +48,7 @@ Design constraints that shape everything below:
 | `internal/gateway/session.go` | Tool-calling session table: pending-call correlation, idle/timeout sweeper, `MAX_SESSIONS` accounting |
 | `internal/gateway/mcpserver.go` | The `/mcp/{sessionId}` JSON-RPC surface (`initialize`, `tools/list`, `tools/call`) |
 | `internal/gateway/metrics.go` | Prometheus exposition format writer |
-| `go.mod` | Stdlib plus `golang.org/x/...`, plus the named exception `go.etcd.io/bbolt` — no other third-party modules |
+| `go.mod` | Stdlib plus `golang.org/x/...` — no third-party modules |
 
 ## 3. Configuration
 

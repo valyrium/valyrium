@@ -1,8 +1,13 @@
-# ADR 0004: Persisted token/cost usage, via bbolt
+# ADR 0004: Persisted token/cost usage
 
 ## Status
 
 Accepted and implemented (internal/gateway/usage.go).
+
+Amended 2026-07-10: the store was first built on `go.etcd.io/bbolt`, authorized
+as a one-off exception to the dependency policy. That exception has been
+withdrawn and the store rebuilt on the standard library — see "Why not bbolt,
+after all" below. `valyrium` is back to zero third-party modules.
 
 ## Context
 
@@ -20,17 +25,11 @@ doesn't have today: **accumulation** (running sums, not just per-request
 values) and **persistence** (surviving a restart — "this month" must include
 requests served before the gateway's current process started).
 
-Per docs/spec.md, the dependency policy is stdlib + `golang.org/x/...` only.
-This ADR adds the one named exception the user authorized for this feature:
-**`go.etcd.io/bbolt`**.
+Per docs/spec.md, the dependency policy is stdlib + `golang.org/x/...` only,
+and this feature does not change that.
 
 ## Alternatives considered
 
-- **Hand-rolled JSON file, rewritten periodically.** No new dependency, but a
-  rewrite-the-whole-file approach risks corruption on a crash or power loss
-  mid-write, and debouncing writes to bound I/O adds a data-loss window and
-  extra scheduling logic to get right. Rejected once bbolt was authorized —
-  bbolt gives real ACID transactions for less code, not more.
 - **`mattn/go-sqlite3`.** Needs CGo, which breaks valyrium's simple
   cross-compiled single-binary distribution (the brew tap). Rejected.
 - **`modernc.org/sqlite` (pure-Go SQLite transpile).** Avoids CGo, but pulls
@@ -41,26 +40,65 @@ This ADR adds the one named exception the user authorized for this feature:
   workers. This workload is a handful of writes per completed request on a
   personal, local gateway — nowhere near the scale these are designed for,
   and the extra moving parts (compaction, level management) aren't worth it.
-- **bbolt (`go.etcd.io/bbolt`).** Pure Go (no CGo — cross-compiles cleanly),
-  a single embedded file, real ACID transactions (no torn writes), and a
-  plain B+tree keyed exactly the way this data wants to be keyed (a date
-  string). Chosen.
+- **bbolt (`go.etcd.io/bbolt`).** Chosen first, then reverted. See below.
+- **A JSON file held in memory and rewritten atomically.** No dependency at
+  all. Chosen.
+
+## Why not bbolt, after all
+
+bbolt was the right shape for the job on its own merits — pure Go, one
+embedded file, ACID transactions, a B+tree keyed exactly how this data wants
+to be keyed. What killed it was its *module graph*, not its code.
+
+`go.etcd.io/bbolt`'s own `go.mod` requires `stretchr/testify`, `go.etcd.io/gofail`,
+`spf13/cobra` and friends — dependencies of its test suite and its `bbolt` CLI,
+none of which valyrium compiles or ships. But Go's module graph is not the
+import graph: `go list -m all` reports the requirements declared by every
+dependency's `go.mod`, whether or not any of their packages are built. Adding
+bbolt therefore turned valyrium's dependency list from two modules into eleven,
+including four `github.com/...` modules the dependency policy exists to keep out.
+This is not fixable by pinning: every bbolt release from v1.3.7 onward declares
+those requirements (only the 2021-era v1.3.6 does not, and pinning to an
+unmaintained release to satisfy a lint is a worse trade than writing the ~60
+lines below).
+
+So the choice was: keep a dependency whose declared graph violates the policy in
+a way no configuration can suppress, or write the store by hand. The store is
+small enough that writing it by hand won, and the original objection to doing so
+turns out not to hold:
+
+- **"A full rewrite risks corruption on a crash mid-write."** Only if the
+  rewrite is done in place. Writing to a temp file in the same directory,
+  `fsync`ing it, and `rename`ing it over the target is atomic on POSIX: a crash
+  at any point leaves either the old complete file or the new complete file,
+  never a torn one. That is the same durability property bbolt's transactions
+  were wanted for.
+- **"Debouncing writes to bound I/O adds a data-loss window."** There is no
+  debouncing, because there is nothing to bound. The ledger is one entry per
+  calendar day — roughly 30 KB after a year of continuous use — and it is
+  rewritten on each completed request, which on a personal local gateway is a
+  handful per minute at most. Writing the whole file every time is cheaper than
+  the machinery that would avoid it, and it leaves no window at all: a request
+  is on disk before its response is logged.
 
 ## Decision
 
 ### Schema
 
-One bbolt database file, one bucket, dead simple:
+One JSON file, one object, dead simple:
 
-- Bucket: `usage_days`
+```json
+{"days": {"2026-07-10": {"input_tokens": 128400, "output_tokens": 42150, "cost_usd": 1.86}}}
+```
+
 - Key: the **local calendar date** the request completed on, formatted
-  `"2006-01-02"` (Go reference layout) — e.g. `"2026-07-10"`. Lexicographic
-  byte ordering of this format is also chronological ordering, which bbolt's
-  cursor iteration relies on.
-- Value: JSON-encoded `{"input_tokens": <int64>, "output_tokens": <int64>, "cost_usd": <float64>}`.
+  `"2006-01-02"` (Go reference layout) — e.g. `"2026-07-10"`.
+- Value: `{"input_tokens": <int64>, "output_tokens": <int64>, "cost_usd": <float64>}`.
 
-No other tables, no schema versioning needed for a single flat bucket like
-this.
+One entry per day, so the file stays around 30 KB per year of continuous use.
+No schema versioning needed for a single flat map like this; an unparseable
+file disables tracking rather than being overwritten (see "Best-effort" below),
+so a future format change can detect and migrate rather than destroy.
 
 ### Write path
 
@@ -68,21 +106,29 @@ A new type in a new file, `internal/gateway/usage.go`:
 
 ```go
 type UsageStore struct {
-	db *bbolt.DB // nil if the store failed to open or is disabled — see "Best-effort" below
+	mu   sync.Mutex
+	path string
+	days map[string]DayUsage // nil if the store failed to open or is disabled
 }
 ```
 
+The whole ledger is held in memory — it is one entry per day, and the read path
+scans all of it on every scrape anyway — so a record is a map update plus a
+rewrite of the file.
+
 `RecordUsage(inputTokens, outputTokens int, costUSD *float64)`:
-1. If `db == nil`, return immediately (no-op).
-2. `db.Update(func(tx *bbolt.Tx) error { ... })`:
-   - Get-or-create bucket `usage_days`.
+1. If `days == nil`, return immediately (no-op).
+2. Under `mu`:
    - Key = `time.Now().Format("2006-01-02")` (local time zone).
-   - Read the existing value at that key (if present, unmarshal it; if
-     absent, start from zero).
-   - Add `inputTokens`, `outputTokens`, and `costUSD` (treat a nil `costUSD`
-     as `0` — the CLI does not always report cost, and an undercounted total
-     is preferable to guessing or erroring).
-   - Marshal and `Put` back under the same key.
+   - Add `inputTokens`, `outputTokens`, and `costUSD` to that day's entry,
+     starting from zero if it is the first record of the day (treat a nil
+     `costUSD` as `0` — the CLI does not always report cost, and an
+     undercounted total is preferable to guessing or erroring).
+   - Rewrite the file: marshal the whole map, write it to a temp file in the
+     same directory, `fsync`, `chmod 0600`, and `rename` it over the target.
+     The rename is atomic, so a crash mid-write leaves the previous ledger
+     intact rather than a half-written one. A write failure is logged, not
+     returned — the request it belongs to has already been served.
 
 One call site: the existing `defer` in `handleChatCompletions`
 (`internal/gateway/server.go` lines 197-212, right next to the existing
@@ -101,12 +147,11 @@ that one defer — no new call sites, no new instrumentation elsewhere.
 `WritePrometheus(w io.Writer)` on `UsageStore`, called from
 `handleMetrics` alongside the existing `s.metrics.WritePrometheus(w)` call:
 
-1. If `db == nil`, write nothing (the usage gauges are simply absent from
+1. If `days == nil`, write nothing (the usage gauges are simply absent from
    `/metrics` output — never emitted as zero, so a scraper/dashboard can tell
    "disabled" from "genuinely zero usage").
-2. `db.View(func(tx *bbolt.Tx) error { ... })`: iterate every key in
-   `usage_days` with a cursor (bounded to ~366 entries per year of uptime —
-   trivially fast to scan in full on every scrape; no separate in-memory
+2. Under `mu`, iterate every entry in `days` (bounded to ~366 entries per year
+   of uptime — trivially fast to scan in full on every scrape; no separate
    cache is needed).
 3. For each day, decide which of five periods it counts toward, relative to
    a reference time `now`. **The period-classification function takes `now
@@ -153,21 +198,26 @@ layer needed between the metric and the UI.
 
 `NewServer(config Config) *Server` keeps its existing signature (no error
 return) — every existing test constructs a `*Server` this way and none of
-them should need to change. Opening the bbolt file happens inside
-`NewServer`, and a failure to open it is **not fatal**:
+them should need to change. Opening the ledger happens inside `NewServer`, and
+a failure to open it is **not fatal**:
 
-- On success: `UsageStore{db: theOpenedDB}`.
-- On failure (permission error, disk full, corrupt file, etc.): log one
-  warning line to stderr (`"warning: usage tracking disabled: %v"`) and
-  construct `UsageStore{db: nil}`. The gateway starts and serves requests
-  normally; usage tracking is simply off for that process. A non-critical
-  analytics feature must never take down the primary gateway function.
+- On success: the file is read into `days` (a missing file is an empty ledger,
+  not an error — that is simply the first run) and written straight back out.
+  That opening write is deliberate: a store that cannot persist should announce
+  itself at startup, not on the first completed request.
+- On failure (permission error, disk full, unparseable file, etc.): log one
+  warning line to stderr (`"warning: usage tracking disabled: %v"`) and leave
+  `days` nil. The gateway starts and serves requests normally; usage tracking
+  is simply off for that process. A non-critical analytics feature must never
+  take down the primary gateway function. Note that an unparseable file is
+  *disabling*, not overwritten — a corrupt ledger is a bug to look at, not
+  data to silently discard.
 
 ### Configuration
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` (parent dir created with mode 0700 if missing) | Path to the bbolt file. Set to the literal string `off` to disable usage tracking entirely (no file created, `RecordUsage` a no-op, gauges omitted). Any other non-empty value is used as the literal file path. |
+| `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` (parent dir created with mode 0700 if missing) | Path to the usage ledger, a JSON file written with mode 0600. Set to the literal string `off` to disable usage tracking entirely (no file created, `RecordUsage` a no-op, gauges omitted). Any other non-empty value is used as the literal file path. |
 
 If `os.UserHomeDir()` errors (no `$HOME`), fall back to `./valyrium-usage.db`
 in the current working directory, non-fatal.
@@ -175,8 +225,9 @@ in the current working directory, non-fatal.
 ### Shutdown
 
 `Server.Shutdown(ctx)` (`internal/gateway/server.go`) additionally closes the
-usage store's bbolt handle after the existing listener-close logic, so the
-file isn't left with an open lock on a clean shutdown.
+usage store after the existing listener-close logic, which flushes the ledger
+one last time. Every record already writes through to disk, so this is a
+belt-and-braces flush rather than the only durability point.
 
 ## What stays true
 
@@ -193,16 +244,19 @@ file isn't left with an open lock on a clean shutdown.
   boundaries) are the host machine's local time zone, not UTC. Documented,
   not hidden — a gateway that travels across time zones will see its
   "today" shift accordingly.
-- **Single process, single file.** Like the rest of `valyrium`, this assumes
-  one gateway process against one usage file. Running multiple replicas
-  against the same file is unsupported (bbolt takes an exclusive file lock;
-  a second process would fail to open it — which, per the best-effort
-  policy above, degrades to "usage tracking disabled" for the second
-  process rather than crashing it).
+- **Single process, single file — and now unenforced.** Like the rest of
+  `valyrium`, this assumes one gateway process against one usage file. bbolt
+  took an exclusive file lock, so a second process against the same file would
+  have failed to open it and degraded to "tracking disabled". There is no lock
+  here: two processes sharing a ledger will each hold their own copy in memory
+  and clobber each other's totals on write, last writer wins. This is a real
+  regression against the bbolt design, accepted because running two valyrium
+  processes against one usage file is already unsupported and because the
+  failure is bounded to analytics — no request is affected. Point a second
+  process at a different `CLAUDE_GATEWAY_USAGE_DB`, or at `off`.
 - **A crash between token computation and the deferred `RecordUsage` call is
   unrecorded** (the same window that already exists for the stderr request
   log right next to it) — accepted, this is analytics, not a ledger of
   record for billing reconciliation.
-- **One new runtime dependency.** `go.etcd.io/bbolt` is the one named
-  exception to the stdlib + `golang.org/x/...` policy, authorized
-  specifically for this feature (see docs/spec.md).
+- **No new runtime dependency.** The stdlib + `golang.org/x/...` policy in
+  docs/spec.md holds; valyrium ships zero third-party modules.

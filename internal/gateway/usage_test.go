@@ -63,7 +63,6 @@ func TestUsageStoreRecordAndAggregate(t *testing.T) {
 		}
 	}
 
-	// Totals must survive a restart — that is the whole point of persisting.
 	var out bytes.Buffer
 	store.WritePrometheus(&out)
 	if !strings.Contains(out.String(), `llmgateway_usage_input_tokens{period="all"} 3157`) {
@@ -71,6 +70,45 @@ func TestUsageStoreRecordAndAggregate(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `llmgateway_usage_cost_usd{period="all"} 15.75`) {
 		t.Errorf("expected the all-time cost gauge in:\n%s", out.String())
+	}
+}
+
+func TestUsageStoreSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.Local)
+	day := time.Date(2026, time.July, 15, 9, 0, 0, 0, time.Local)
+
+	first := OpenUsageStore(path)
+	if !first.enabled() {
+		t.Fatal("expected an enabled usage store")
+	}
+	first.recordUsageOn(day, 100, 10, costOf(0.5))
+	first.recordUsageOn(day.AddDate(0, 0, -1), 200, 20, costOf(1.0))
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// A second process against the same file must see the first one's totals —
+	// that is the whole point of persisting.
+	second := OpenUsageStore(path)
+	if !second.enabled() {
+		t.Fatal("expected an enabled usage store after reopening")
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	all := second.Aggregate(now)["all"]
+	if all.InputTokens != 300 || all.OutputTokens != 30 {
+		t.Errorf("after restart: %d in / %d out, want 300 in / 30 out", all.InputTokens, all.OutputTokens)
+	}
+	if diff := all.CostUSD - 1.5; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("after restart: cost %v, want 1.5", all.CostUSD)
+	}
+
+	// Recording against the reopened store must add to the reloaded totals
+	// rather than start over from an empty ledger.
+	second.recordUsageOn(day, 1, 1, nil)
+	if got := second.Aggregate(now)["all"].InputTokens; got != 301 {
+		t.Errorf("after restart and one more record: %d in, want 301", got)
 	}
 }
 
