@@ -46,6 +46,7 @@ type ChatCompletionRequest struct {
 	MaxTokens           int             `json:"max_tokens"`
 	MaxCompletionTokens int             `json:"max_completion_tokens"`
 	Reasoning           *ReasoningSpec  `json:"reasoning"`
+	ResponseFormat      *ResponseFormat `json:"response_format"`
 }
 
 // ReasoningSpec mirrors the OpenRouter-style extra-body `reasoning` object
@@ -55,6 +56,20 @@ type ChatCompletionRequest struct {
 type ReasoningSpec struct {
 	Enabled *bool  `json:"enabled,omitempty"`
 	Effort  string `json:"effort,omitempty"`
+}
+
+// ResponseFormat mirrors OpenAI's response_format request field. Only
+// "json_object" and "json_schema" are meaningful here; "text" (or an absent
+// field) leaves the model free-form.
+type ResponseFormat struct {
+	Type       string          `json:"type"`
+	JSONSchema *JSONSchemaSpec `json:"json_schema,omitempty"`
+}
+
+type JSONSchemaSpec struct {
+	Name   string                 `json:"name"`
+	Schema map[string]interface{} `json:"schema"`
+	Strict *bool                  `json:"strict,omitempty"`
 }
 
 type TextContentPart struct {

@@ -33,7 +33,7 @@ func runClaudeStub(mode string) int {
 			mcpConfig = os.Args[i+1]
 		}
 	}
-	io.Copy(io.Discard, os.Stdin)
+	_, _ = io.Copy(io.Discard, os.Stdin)
 
 	fail := func(msg string) int {
 		line, _ := json.Marshal(map[string]interface{}{"type": "result", "is_error": true, "result": msg})
@@ -140,7 +140,7 @@ func stubRPC(client *http.Client, url string, id int, method string, params inte
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var out map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -259,7 +259,7 @@ func postChat(t *testing.T, baseURL string, body map[string]interface{}) (int, *
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, _ := io.ReadAll(resp.Body)
 	var parsed chatResponse
@@ -469,7 +469,7 @@ func TestStreamingToolTurnLogsUsage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("POST /v1/chat/completions: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, _ := io.ReadAll(resp.Body)
 		sseBody = string(raw)
 		if resp.StatusCode != 200 {

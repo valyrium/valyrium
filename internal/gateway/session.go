@@ -294,7 +294,7 @@ func (sm *SessionManager) reapSessionLocked(sessionID string) {
 		}
 	}
 	if sess.Cmd != nil && sess.Cmd.Process != nil {
-		sess.Cmd.Process.Kill()
+		_ = sess.Cmd.Process.Kill()
 	}
 	sess.Mu.Unlock()
 

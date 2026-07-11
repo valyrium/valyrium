@@ -134,7 +134,7 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 		settledOnce.Do(func() {
 			settled = true
 			if cmd.ProcessState == nil {
-				cmd.Process.Kill()
+				_ = cmd.Process.Kill()
 			}
 		})
 
@@ -150,7 +150,7 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 			settleMutex.Lock()
 			defer settleMutex.Unlock()
 			if cmd.ProcessState == nil {
-				cmd.Process.Kill()
+				_ = cmd.Process.Kill()
 			}
 		}
 	}()
@@ -203,7 +203,7 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 				if detail == "" {
 					detail = "unknown error"
 				}
-				cmd.Wait()
+				_ = cmd.Wait()
 				return finish(nil, &ClaudeCliError{
 					Message:    fmt.Sprintf("claude CLI reported an error: %s", detail),
 					StatusCode: 502,
@@ -224,7 +224,7 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 		}
 	}
 
-	err = cmd.Wait()
+	_ = cmd.Wait()
 	if ctx.Err() == context.DeadlineExceeded {
 		return finish(nil, &ClaudeCliError{
 			Message:    fmt.Sprintf("claude CLI timed out after %dms", opts.TimeoutMs),
@@ -421,7 +421,7 @@ func relaySessionStream(sm *SessionManager, sess *Session, stdout io.Reader, cmd
 		}
 	}
 
-	cmd.Wait()
+	_ = cmd.Wait()
 
 	if !sawResult {
 		sess.Events <- SessionEvent{
