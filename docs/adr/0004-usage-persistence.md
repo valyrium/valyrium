@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (design). Not yet implemented.
+Accepted and implemented (internal/gateway/usage.go).
 
 ## Context
 

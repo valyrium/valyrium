@@ -240,6 +240,9 @@ func newRelayServer(t *testing.T, cfg Config) (*Server, *httptest.Server) {
 	if cfg.Concurrency == 0 {
 		cfg.Concurrency = 4
 	}
+	if cfg.UsageDB == "" {
+		cfg.UsageDB = "off"
+	}
 
 	server := NewServer(cfg)
 	ts := httptest.NewServer(server)

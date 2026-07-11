@@ -12,13 +12,15 @@ type Metrics struct {
 	requestsTotal   map[string]map[int]int64
 	inflightGauge   int64
 	requestDuration []int64
+	usage           *UsageStore
 	mu              sync.RWMutex
 }
 
-func NewMetrics() *Metrics {
+func NewMetrics(usage *UsageStore) *Metrics {
 	return &Metrics{
 		requestsTotal:   make(map[string]map[int]int64),
 		requestDuration: make([]int64, 0),
+		usage:           usage,
 	}
 }
 

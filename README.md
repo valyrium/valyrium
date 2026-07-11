@@ -63,7 +63,7 @@ All configuration is via environment variables, read at startup:
 |---|---|---|
 | `CLAUDE_GATEWAY_PORT` | `8787` | HTTP listen port |
 | `CLAUDE_GATEWAY_HOST` | `127.0.0.1` | Bind address (loopback-only by default) |
-| `CLAUDE_GATEWAY_API_KEY` | *(unset)* | If set, all routes except `/healthz` require this key as `Authorization: Bearer <key>` or `x-api-key: <key>` (compared in constant time) |
+| `CLAUDE_GATEWAY_API_KEY` | *(unset)* | If set, all routes except `/healthz` and `/dashboard` require this key as `Authorization: Bearer <key>` or `x-api-key: <key>` (compared in constant time) |
 | `CLAUDE_GATEWAY_MODEL` | `sonnet` | Default model; also fallback for unrecognized ids |
 | `CLAUDE_GATEWAY_MODELS` | `sonnet,opus,haiku` | Comma-separated ids advertised by `GET /v1/models` and accepted as valid request models |
 | `CLAUDE_GATEWAY_BIN` | `claude` | Path to Claude Code CLI executable |
@@ -76,11 +76,15 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_RESUME` | `false` | Opt into cross-request conversation continuity (`1`/`true`/`yes`/`on`). See [Conversation continuity](#conversation-continuity-experimental) |
 | `CLAUDE_GATEWAY_RESUME_MAX` | `32` | Maximum resumable conversations held in memory when `CLAUDE_GATEWAY_RESUME` is on |
 | `CLAUDE_GATEWAY_EXPOSE_REASONING` | `false` | If `true`, thinking blocks from the CLI stream are relayed as `reasoning_content` (on the message and on streaming deltas) instead of being dropped |
+| `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` | Path to the [bbolt](https://github.com/etcd-io/bbolt) file holding persisted token/cost totals. Set to `off` to disable usage tracking (no file, no usage gauges). If the file cannot be opened, the gateway logs a warning and runs with tracking disabled |
 
 ## HTTP API
 
 ### `GET /healthz`
 Liveness probe (no auth required). Returns `{"ok":true}`.
+
+### `GET /dashboard`
+Human-facing dashboard: request volume by route and status, in-flight requests, live tool-calling sessions, configured models, and the token/cost ledger. Served unauthenticated ([ADR 0003](docs/adr/0003-embedded-dashboard.md)) because a browser navigation cannot set an auth header — the page is a static shell carrying no data, and its own `fetch()` calls to `/metrics` and `/v1/models` supply the key, which it prompts for on a `401` and caches in `localStorage`.
 
 ### `GET /v1/models`
 List configured models. Requires auth if `CLAUDE_GATEWAY_API_KEY` is set. Each entry includes `context_length` and `max_model_len` (same value, two names) so OpenAI-compatible clients that auto-detect context windows don't fall back to a guessed default. See `CLAUDE_GATEWAY_CONTEXT_LENGTH` above to override.
@@ -147,6 +151,7 @@ Prometheus-format metrics (requires auth if key is set). Tracks:
 - `llmgateway_inflight_requests` — gauge of in-flight requests
 - `llmgateway_request_duration_seconds` — summary of request latency
 - `llmgateway_live_sessions` — gauge of live tool-calling sessions (active + parked)
+- `llmgateway_usage_input_tokens` / `llmgateway_usage_output_tokens` / `llmgateway_usage_cost_usd` — gauges of persisted usage, labelled `period="current|week|month|ytd|all"` ([ADR 0004](docs/adr/0004-usage-persistence.md)). Omitted entirely when usage tracking is off, so a scraper can tell "disabled" from "zero"
 
 ## Tool Calling (OpenAI functions) via MCP relay
 
