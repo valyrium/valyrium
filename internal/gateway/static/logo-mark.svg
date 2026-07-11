@@ -1,0 +1,10 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="valyrium">
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#34e0ea" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+  <path filter="url(#glow)" fill-rule="evenodd" clip-rule="evenodd" fill="#34e0ea"
+        d="M55.4,45.5 L32,59 L8.6,45.5 L8.6,18.5 L32,5 L55.4,18.5 Z
+           M18,20 L32,40 L46,20 L39.5,20 L32,29.5 L24.5,20 Z"/>
+</svg>

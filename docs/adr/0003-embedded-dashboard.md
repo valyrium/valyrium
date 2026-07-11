@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed. Design complete (docs/design/dashboard.html, docs/design/logo-mark.svg).
-Not yet implemented in internal/gateway.
+Accepted and implemented. The design (docs/design/dashboard.html,
+docs/design/logo-mark.svg) is embedded verbatim in internal/gateway/static/
+and served at `GET /dashboard`.
 
 Three visual directions were designed and compared; **"Reactor" was chosen**
 — a deliberate single dark-theme commit (no light/dark toggle), a glowing

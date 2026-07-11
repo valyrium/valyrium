@@ -113,6 +113,10 @@ func main() {
 		exposeReasoning = v
 	}
 
+	// Empty means the default path ($HOME/.valyrium/usage.db); the literal
+	// string "off" disables usage tracking entirely.
+	usageDB := os.Getenv("CLAUDE_GATEWAY_USAGE_DB")
+
 	config := gateway.Config{
 		Port:                 port,
 		Host:                 host,
@@ -130,6 +134,7 @@ func main() {
 		ResumeSessions:       resumeSessions,
 		ResumeMaxEntries:     resumeMaxEntries,
 		ExposeReasoning:      exposeReasoning,
+		UsageDB:              usageDB,
 	}
 
 	server := gateway.NewServer(config)

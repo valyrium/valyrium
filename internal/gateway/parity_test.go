@@ -38,6 +38,7 @@ exit 0
 		ClaudeBin:    stubBin,
 		TimeoutMS:    30000,
 		Concurrency:  4,
+		UsageDB:      "off",
 	}
 
 	server := NewServer(config)
@@ -364,6 +365,7 @@ exit 0
 		ClaudeBin:    stubBin,
 		TimeoutMS:    30000,
 		Concurrency:  4,
+		UsageDB:      "off",
 	}
 
 	server := NewServer(config)

@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>valyrium — dashboard</title>
+<style>
+  :root {
+    --void: #07080b; --surf: #101319; --surf2: #14181f;
+    --ink: #f4f6f8; --ink-2: #97a0ad; --muted: #5b6270;
+    --line: rgba(255,255,255,0.08);
+    --hero: #ff9d5c; --heroglow: rgba(255,157,92,0.35);
+    --cool: #34e0ea; --coolglow: rgba(52,224,234,0.30);
+    --good: #33d17a; --warn: #ffc247; --crit: #ff5f6d;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--void);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .page {
+    width: 100%;
+    padding: var(--sp-6) clamp(20px, 4vw, 56px) 52px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-5);
+  }
+  a { color: var(--cool); }
+
+  .topbar { display: flex; align-items: center; gap: var(--sp-3); }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand svg { width: 30px; height: 30px; filter: drop-shadow(0 0 6px var(--coolglow)); flex: none; }
+  .brand-word { font-weight: 800; font-size: 15px; letter-spacing: 0.10em; text-transform: uppercase; }
+  .brand-eyebrow { font-size: 10px; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 12px; font-size: 11.5px; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--ink-2); background: var(--surf);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot.good { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .dot.crit { background: var(--crit); box-shadow: 0 0 8px var(--crit); }
+  .dot.idle { background: var(--muted); }
+  a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .fill, .meter-fill, .seg { transition: width 400ms ease; }
+  }
+
+  /* connect panel (API key entry when the gateway requires one) */
+  .connect {
+    border: 1px solid rgba(255,157,92,0.3); background: var(--surf); border-radius: 12px;
+    padding: var(--sp-4); display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  }
+  .connect p { margin: 0; font-size: 13px; color: var(--ink-2); }
+  .connect form { display: flex; gap: var(--sp-2); flex: 1; min-width: 260px; }
+  .connect input {
+    flex: 1; font-family: var(--font-mono); font-size: 13px; padding: 7px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--void); color: var(--ink);
+  }
+  .connect button.primary {
+    font-family: var(--font-sans); font-size: 13px; font-weight: 700; color: #08090b;
+    background: var(--hero); border: none; border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  }
+  .connect button.primary:hover { filter: brightness(1.08); }
+
+  /* hero */
+  .hero {
+    border: 1px solid rgba(255,157,92,0.25); border-radius: 16px; padding: 26px 28px;
+    background: radial-gradient(120% 160% at 0% 0%, rgba(255,157,92,0.10), transparent 55%), var(--surf);
+    box-shadow: 0 0 0 1px rgba(255,157,92,0.06), 0 0 40px -12px var(--heroglow);
+    display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  }
+  .hero-label { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .hero-num {
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+    font-size: clamp(48px, 7vw, 76px); font-weight: 800; line-height: 1; color: var(--hero);
+    text-shadow: 0 0 28px var(--heroglow);
+  }
+  .hero-sub { font-size: 12.5px; color: var(--ink-2); margin-top: 6px; }
+  .hero-ring {
+    width: 84px; height: 84px; border-radius: 50%; flex: none;
+    border: 6px solid rgba(52,224,234,0.18); position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .hero-ring::before {
+    content: ""; position: absolute; inset: -6px; border-radius: 50%;
+    border: 6px solid var(--cool); border-right-color: transparent; border-bottom-color: transparent;
+    filter: drop-shadow(0 0 8px var(--coolglow));
+  }
+  .hero-ring span { font-size: 11px; color: var(--cool); font-weight: 700; letter-spacing: 0.04em; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .tile { background: var(--surf); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 6px; box-shadow: 0 0 24px -10px var(--coolglow); }
+  .tile-label { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .tile-value { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 24px; font-weight: 700; color: var(--cool); }
+  .tile-sub { font-size: 11.5px; color: var(--ink-2); }
+
+  .cols { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; align-items: start; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+  .card { background: var(--surf); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .card h2 { margin: 0; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; color: var(--ink-2); }
+  .card .cap { margin: -8px 0 0; font-size: 11.5px; color: var(--muted); }
+
+  .compbar { height: 22px; border-radius: 6px; overflow: hidden; display: flex; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; color: #08090b; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
+  .legend span.d { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
+
+  table.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.t th { text-align: left; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 0 8px 8px 0; border-bottom: 1px solid var(--line); }
+  table.t td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--line); }
+  table.t tr:last-child td { border-bottom: none; }
+  .method-chip { font-family: var(--font-mono); font-size: 10.5px; font-weight: 800; letter-spacing: 0.03em; padding: 3px 8px; border-radius: 5px; }
+  .m-get    { background: rgba(52,224,234,0.16); color: var(--cool); }
+  .m-post   { background: rgba(255,157,92,0.16); color: var(--hero); }
+  .m-put    { background: rgba(144,133,233,0.18); color: #9085e9; }
+  .m-delete { background: rgba(213,81,129,0.18); color: #d55181; }
+  .m-other  { background: rgba(255,255,255,0.08); color: var(--ink-2); }
+  .route-path { font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
+  .route-count { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-2); }
+  .route-meter { width: 64px; height: 6px; background: var(--void); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+  .route-meter .meter-fill { height: 100%; background: var(--cool); }
+
+  .models { display: flex; flex-wrap: wrap; gap: 8px; }
+  .mchip { font-family: var(--font-mono); font-size: 12px; padding: 6px 11px; border-radius: 999px; border: 1px solid rgba(52,224,234,0.3); color: var(--cool); background: rgba(52,224,234,0.06); }
+
+  .tabrow { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    font: inherit; font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    cursor: pointer; border: 1px solid var(--line); background: var(--void); color: var(--ink-2);
+    border-radius: 999px; padding: 6px 13px;
+  }
+  .tab.active { background: rgba(255,157,92,0.14); border-color: rgba(255,157,92,0.4); color: var(--hero); }
+  .tokrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; }
+  .tokstat { display: flex; flex-direction: column; gap: 4px; }
+  .toklabel { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .tokval { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 800; color: var(--hero); text-shadow: 0 0 18px var(--heroglow); }
+
+  .empty { color: var(--muted); font-size: 12.5px; }
+  .foot { text-align: center; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="valyrium">
+        <path fill-rule="evenodd" clip-rule="evenodd" fill="#34e0ea"
+              d="M55.4,45.5 L32,59 L8.6,45.5 L8.6,18.5 L32,5 L55.4,18.5 Z M18,20 L32,40 L46,20 L39.5,20 L32,29.5 L24.5,20 Z"/>
+      </svg>
+      <div>
+        <div class="brand-word">valyrium</div>
+        <div class="brand-eyebrow">reactor readout</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill" id="connPill"><span class="dot idle" id="connDot"></span><span id="connText">Connecting…</span></span>
+    <span class="pill" id="authPill"><span class="dot idle" id="authDot"></span><span id="authText">Auth unknown</span></span>
+  </div>
+
+  <div class="connect" id="connectPanel" hidden>
+    <p><strong>API key required.</strong> This gateway rejects unauthenticated requests. Enter the key configured as <code>CLAUDE_GATEWAY_API_KEY</code>.</p>
+    <form id="connectForm">
+      <label for="apiKeyInput" style="display:none;">API key</label>
+      <input id="apiKeyInput" type="password" placeholder="API key" autocomplete="off">
+      <button class="primary" type="submit">Connect</button>
+    </form>
+  </div>
+
+  <div class="hero">
+    <div>
+      <div class="hero-label">Total requests</div>
+      <div class="hero-num" id="heroTotal">—</div>
+      <div class="hero-sub" id="heroSub">since page load</div>
+    </div>
+    <div class="hero-ring"><span id="heroRing">—</span></div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><span class="tile-label">Inflight</span><span class="tile-value" id="tileInflight">—</span><span class="tile-sub">actively generating</span></div>
+    <div class="tile"><span class="tile-label">Live sessions</span><span class="tile-value" id="tileSessions">—</span><span class="tile-sub">active + parked</span></div>
+    <div class="tile"><span class="tile-label">Avg latency</span><span class="tile-value" id="tileLatency">—</span><span class="tile-sub">across all requests</span></div>
+  </div>
+
+  <div class="cols">
+    <div class="card">
+      <h2>Response composition</h2>
+      <div class="compbar" id="compBar"></div>
+      <div class="legend" id="compLegend"></div>
+    </div>
+    <div class="card">
+      <h2>Available models</h2>
+      <div class="models" id="modelChips"><span class="empty">Loading…</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Requests by route</h2>
+    <table class="t">
+      <thead><tr><th>Method</th><th>Path</th><th style="text-align:right;">Count</th><th>Share</th></tr></thead>
+      <tbody id="routeRows"></tbody>
+    </table>
+    <div class="empty" id="routeEmpty" hidden>No requests recorded yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Token ledger</h2>
+    <p class="cap">Input / output tokens and cost, persisted across restarts.</p>
+    <div class="tabrow" id="tokTabs">
+      <button type="button" class="tab" data-period="current">Current</button>
+      <button type="button" class="tab" data-period="week">Week</button>
+      <button type="button" class="tab active" data-period="month">Month</button>
+      <button type="button" class="tab" data-period="ytd">YTD</button>
+      <button type="button" class="tab" data-period="all">All time</button>
+    </div>
+    <div class="tokrow">
+      <div class="tokstat"><span class="toklabel">Input tokens</span><span class="tokval" id="tokInput">—</span></div>
+      <div class="tokstat"><span class="toklabel">Output tokens</span><span class="tokval" id="tokOutput">—</span></div>
+      <div class="tokstat"><span class="toklabel">Cost</span><span class="tokval" id="tokCost">—</span></div>
+    </div>
+  </div>
+
+  <div class="foot">polling /metrics + /v1/models every 5s · valyrium</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var STORAGE_KEY = "valyrium.dashboardApiKey";
+  var POLL_MS = 5000;
+  var selectedPeriod = "month";
+
+  var els = {
+    connDot: document.getElementById("connDot"),
+    connText: document.getElementById("connText"),
+    authDot: document.getElementById("authDot"),
+    authText: document.getElementById("authText"),
+    connectPanel: document.getElementById("connectPanel"),
+    connectForm: document.getElementById("connectForm"),
+    apiKeyInput: document.getElementById("apiKeyInput"),
+    heroTotal: document.getElementById("heroTotal"),
+    heroSub: document.getElementById("heroSub"),
+    heroRing: document.getElementById("heroRing"),
+    tileInflight: document.getElementById("tileInflight"),
+    tileSessions: document.getElementById("tileSessions"),
+    tileLatency: document.getElementById("tileLatency"),
+    compBar: document.getElementById("compBar"),
+    compLegend: document.getElementById("compLegend"),
+    modelChips: document.getElementById("modelChips"),
+    routeRows: document.getElementById("routeRows"),
+    routeEmpty: document.getElementById("routeEmpty"),
+    tokTabs: document.getElementById("tokTabs"),
+    tokInput: document.getElementById("tokInput"),
+    tokOutput: document.getElementById("tokOutput"),
+    tokCost: document.getElementById("tokCost"),
+  };
+
+  var prevTotal = null;
+  var prevTotalTs = null;
+  var modelsLoaded = false;
+  var usingSampleData = false;
+  var lastUsage = null;
+
+  function storedKey() {
+    try { return window.localStorage.getItem(STORAGE_KEY) || ""; } catch (e) { return ""; }
+  }
+  function setStoredKey(k) {
+    try { window.localStorage.setItem(STORAGE_KEY, k); } catch (e) {}
+  }
+
+  function setConn(state, label) {
+    els.connDot.className = "dot " + state;
+    els.connText.textContent = label;
+  }
+  function setAuth(state, label) {
+    els.authDot.className = "dot " + state;
+    els.authText.textContent = label;
+  }
+
+  function apiFetch(path) {
+    var headers = {};
+    var key = storedKey();
+    if (key) { headers["Authorization"] = "Bearer " + key; }
+    return fetch(path, { headers: headers }).then(function (res) {
+      if (res.status === 401) {
+        var err = new Error("unauthorized");
+        err.unauthorized = true;
+        throw err;
+      }
+      if (!res.ok) { throw new Error("http " + res.status); }
+      return res;
+    });
+  }
+
+  function emptyUsage() {
+    return {
+      current: { input: 0, output: 0, cost: 0 },
+      week:    { input: 0, output: 0, cost: 0 },
+      month:   { input: 0, output: 0, cost: 0 },
+      ytd:     { input: 0, output: 0, cost: 0 },
+      all:     { input: 0, output: 0, cost: 0 }
+    };
+  }
+
+  function parsePrometheus(text) {
+    var lines = text.split("\n");
+    var out = {
+      inflight: 0, liveSessions: 0, durationSum: 0, durationCount: 0,
+      routes: {}, // "METHOD /path" -> { total, byStatus: {2xx,4xx,5xx,other} }
+      usage: emptyUsage()
+    };
+    var lineRe = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+([0-9eE+\-.]+)\s*$/;
+    var labelRe = /([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"/g;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line || line.charAt(0) === "#") { continue; }
+      var m = lineRe.exec(line);
+      if (!m) { continue; }
+      var name = m[1];
+      var labelsRaw = m[3] || "";
+      var value = parseFloat(m[4]);
+      if (isNaN(value)) { continue; }
+
+      if (name === "llmgateway_inflight_requests") {
+        out.inflight = value;
+      } else if (name === "llmgateway_live_sessions") {
+        out.liveSessions = value;
+      } else if (name === "llmgateway_request_duration_seconds_sum") {
+        out.durationSum = value;
+      } else if (name === "llmgateway_request_duration_seconds_count") {
+        out.durationCount = value;
+      } else if (name === "llmgateway_requests_total") {
+        var labels = {};
+        var lm;
+        labelRe.lastIndex = 0;
+        while ((lm = labelRe.exec(labelsRaw)) !== null) { labels[lm[1]] = lm[2]; }
+        var routeKey = labels.path || "unknown";
+        var status = labels.status || "0";
+        var bucket = "other";
+        var firstDigit = status.charAt(0);
+        if (firstDigit === "2") { bucket = "2xx"; }
+        else if (firstDigit === "4") { bucket = "4xx"; }
+        else if (firstDigit === "5") { bucket = "5xx"; }
+        if (!out.routes[routeKey]) {
+          out.routes[routeKey] = { total: 0, byStatus: { "2xx": 0, "4xx": 0, "5xx": 0, other: 0 } };
+        }
+        out.routes[routeKey].total += value;
+        out.routes[routeKey].byStatus[bucket] += value;
+      } else if (name === "llmgateway_usage_input_tokens" || name === "llmgateway_usage_output_tokens" || name === "llmgateway_usage_cost_usd") {
+        var ulabels = {};
+        var ulm;
+        labelRe.lastIndex = 0;
+        while ((ulm = labelRe.exec(labelsRaw)) !== null) { ulabels[ulm[1]] = ulm[2]; }
+        var period = ulabels.period;
+        if (period && out.usage[period]) {
+          if (name === "llmgateway_usage_input_tokens") { out.usage[period].input = value; }
+          else if (name === "llmgateway_usage_output_tokens") { out.usage[period].output = value; }
+          else { out.usage[period].cost = value; }
+        }
+      }
+    }
+    return out;
+  }
+
+  function fmtInt(n) { return Math.round(n).toLocaleString("en-US"); }
+  function fmtCompact(n) {
+    if (n >= 1000000) { return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + "M"; }
+    if (n >= 1000) { return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "K"; }
+    return fmtInt(n);
+  }
+  function fmtMs(sumSeconds, count) {
+    if (!count) { return "—"; }
+    return Math.round((sumSeconds / count) * 1000) + " ms";
+  }
+  function methodClass(method) {
+    switch (method) {
+      case "GET": return "m-get";
+      case "POST": return "m-post";
+      case "PUT": case "PATCH": return "m-put";
+      case "DELETE": return "m-delete";
+      default: return "m-other";
+    }
+  }
+
+  function renderComposition(routes) {
+    var totals = { "2xx": 0, "4xx": 0, "5xx": 0, other: 0 };
+    var grand = 0;
+    Object.keys(routes).forEach(function (k) {
+      var r = routes[k];
+      Object.keys(totals).forEach(function (b) { totals[b] += r.byStatus[b]; });
+      grand += r.total;
+    });
+
+    var defs = [
+      { key: "2xx", label: "2xx", cls: "good", color: "var(--good)" },
+      { key: "4xx", label: "4xx", cls: "warn", color: "var(--warn)" },
+      { key: "5xx", label: "5xx", cls: "crit", color: "var(--crit)" },
+      { key: "other", label: "other", cls: "idle", color: "#2a2f3a" }
+    ];
+
+    els.compBar.innerHTML = "";
+    els.compLegend.innerHTML = "";
+    defs.forEach(function (d) {
+      var count = totals[d.key];
+      var pct = grand > 0 ? (count / grand) * 100 : 0;
+
+      var seg = document.createElement("div");
+      seg.className = "seg";
+      seg.style.width = pct.toFixed(1) + "%";
+      seg.style.background = d.color;
+      if (pct >= 8) { seg.textContent = pct.toFixed(0) + "%"; }
+      els.compBar.appendChild(seg);
+
+      var leg = document.createElement("span");
+      var dotSpan = document.createElement("span");
+      dotSpan.className = "d";
+      dotSpan.style.background = d.color;
+      leg.appendChild(dotSpan);
+      leg.appendChild(document.createTextNode(d.label + " · " + fmtInt(count)));
+      els.compLegend.appendChild(leg);
+    });
+
+    var successRate = grand > 0 ? (totals["2xx"] / grand) * 100 : 0;
+    els.heroRing.textContent = successRate.toFixed(0) + "%";
+  }
+
+  function renderRouteRows(routes) {
+    var keys = Object.keys(routes);
+    els.routeRows.innerHTML = "";
+    if (keys.length === 0) { els.routeEmpty.hidden = false; return; }
+    els.routeEmpty.hidden = true;
+
+    var grand = keys.reduce(function (sum, k) { return sum + routes[k].total; }, 0);
+    keys.sort(function (a, b) { return routes[b].total - routes[a].total; });
+
+    keys.forEach(function (key) {
+      var r = routes[key];
+      var sp = key.indexOf(" ");
+      var method = sp > -1 ? key.substring(0, sp) : "";
+      var path = sp > -1 ? key.substring(sp + 1) : key;
+      var pct = grand > 0 ? (r.total / grand) * 100 : 0;
+
+      var tr = document.createElement("tr");
+      var tdMethod = document.createElement("td");
+      var chip = document.createElement("span");
+      chip.className = "method-chip " + methodClass(method);
+      chip.textContent = method || "—";
+      tdMethod.appendChild(chip);
+
+      var tdPath = document.createElement("td");
+      tdPath.className = "route-path";
+      tdPath.textContent = path;
+
+      var tdCount = document.createElement("td");
+      tdCount.className = "route-count";
+      tdCount.textContent = fmtInt(r.total);
+
+      var tdShare = document.createElement("td");
+      var meter = document.createElement("div");
+      meter.className = "route-meter";
+      var meterFill = document.createElement("div");
+      meterFill.className = "meter-fill";
+      meterFill.style.width = pct.toFixed(1) + "%";
+      meter.appendChild(meterFill);
+      tdShare.appendChild(meter);
+
+      tr.appendChild(tdMethod); tr.appendChild(tdPath); tr.appendChild(tdCount); tr.appendChild(tdShare);
+      els.routeRows.appendChild(tr);
+    });
+  }
+
+  function renderModels(ids) {
+    els.modelChips.innerHTML = "";
+    if (!ids.length) {
+      var empty = document.createElement("span");
+      empty.className = "empty";
+      empty.textContent = "No models advertised.";
+      els.modelChips.appendChild(empty);
+      return;
+    }
+    ids.forEach(function (id) {
+      var chip = document.createElement("span");
+      chip.className = "mchip";
+      chip.textContent = id;
+      els.modelChips.appendChild(chip);
+    });
+  }
+
+  function renderTokenPeriod() {
+    if (!lastUsage) { return; }
+    var p = lastUsage[selectedPeriod];
+    if (!p) { return; }
+    els.tokInput.textContent = fmtCompact(p.input);
+    els.tokOutput.textContent = fmtCompact(p.output);
+    els.tokCost.textContent = "$" + p.cost.toFixed(2);
+  }
+
+  els.tokTabs.querySelectorAll(".tab").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      els.tokTabs.querySelectorAll(".tab").forEach(function (t) { t.classList.toggle("active", t === tab); });
+      selectedPeriod = tab.getAttribute("data-period");
+      renderTokenPeriod();
+    });
+  });
+
+  function applySnapshot(parsed) {
+    els.tileInflight.textContent = fmtInt(parsed.inflight);
+    els.tileSessions.textContent = fmtInt(parsed.liveSessions);
+
+    var grandTotal = Object.keys(parsed.routes).reduce(function (sum, k) { return sum + parsed.routes[k].total; }, 0);
+    els.heroTotal.textContent = fmtInt(grandTotal);
+
+    var now = Date.now();
+    if (prevTotal !== null && prevTotalTs !== null) {
+      var elapsedMin = (now - prevTotalTs) / 60000;
+      var delta = grandTotal - prevTotal;
+      var rate = elapsedMin > 0 ? delta / elapsedMin : 0;
+      els.heroSub.textContent = (rate >= 0 ? "+" : "") + rate.toFixed(1) + " / min · since page load";
+    }
+    prevTotal = grandTotal;
+    prevTotalTs = now;
+
+    els.tileLatency.textContent = fmtMs(parsed.durationSum, parsed.durationCount);
+
+    renderComposition(parsed.routes);
+    renderRouteRows(parsed.routes);
+
+    lastUsage = parsed.usage;
+    renderTokenPeriod();
+  }
+
+  function loadModelsOnce() {
+    if (modelsLoaded) { return; }
+    apiFetch("/v1/models")
+      .then(function (res) { return res.json(); })
+      .then(function (body) {
+        modelsLoaded = true;
+        var ids = (body && body.data ? body.data : []).map(function (m) { return m.id; });
+        renderModels(ids);
+      })
+      .catch(function () {});
+  }
+
+  function sampleSnapshot() {
+    var text = [
+      "llmgateway_requests_total{path=\"POST /v1/chat/completions\",status=\"200\"} 482",
+      "llmgateway_requests_total{path=\"POST /v1/chat/completions\",status=\"429\"} 6",
+      "llmgateway_requests_total{path=\"POST /v1/chat/completions\",status=\"500\"} 2",
+      "llmgateway_requests_total{path=\"GET /v1/models\",status=\"200\"} 34",
+      "llmgateway_requests_total{path=\"GET /metrics\",status=\"200\"} 118",
+      "llmgateway_inflight_requests 2",
+      "llmgateway_live_sessions 3",
+      "llmgateway_request_duration_seconds_sum 612.4",
+      "llmgateway_request_duration_seconds_count 642",
+      "llmgateway_usage_input_tokens{period=\"current\"} 128400",
+      "llmgateway_usage_input_tokens{period=\"week\"} 892000",
+      "llmgateway_usage_input_tokens{period=\"month\"} 3100000",
+      "llmgateway_usage_input_tokens{period=\"ytd\"} 18400000",
+      "llmgateway_usage_input_tokens{period=\"all\"} 22000000",
+      "llmgateway_usage_output_tokens{period=\"current\"} 42150",
+      "llmgateway_usage_output_tokens{period=\"week\"} 301200",
+      "llmgateway_usage_output_tokens{period=\"month\"} 1050000",
+      "llmgateway_usage_output_tokens{period=\"ytd\"} 6200000",
+      "llmgateway_usage_output_tokens{period=\"all\"} 7400000",
+      "llmgateway_usage_cost_usd{period=\"current\"} 1.86",
+      "llmgateway_usage_cost_usd{period=\"week\"} 12.40",
+      "llmgateway_usage_cost_usd{period=\"month\"} 48.90",
+      "llmgateway_usage_cost_usd{period=\"ytd\"} 286.10",
+      "llmgateway_usage_cost_usd{period=\"all\"} 341.55"
+    ].join("\n");
+    return parsePrometheus(text);
+  }
+
+  function poll() {
+    apiFetch("/metrics")
+      .then(function (res) { return res.text(); })
+      .then(function (text) {
+        usingSampleData = false;
+        els.connectPanel.hidden = true;
+        setConn("good", "Operational");
+        setAuth("good", storedKey() ? "Protected · connected" : "Open");
+        applySnapshot(parsePrometheus(text));
+        loadModelsOnce();
+      })
+      .catch(function (err) {
+        if (err && err.unauthorized) {
+          setAuth("warn", "Protected · key required");
+          setConn("warn", "Awaiting API key");
+          els.connectPanel.hidden = false;
+          return;
+        }
+        if (!usingSampleData) {
+          usingSampleData = true;
+          setConn("idle", "Sample data — offline preview");
+          setAuth("idle", "N/A");
+          applySnapshot(sampleSnapshot());
+          renderModels(["sonnet", "opus", "haiku"]);
+          modelsLoaded = true;
+        }
+      });
+  }
+
+  els.connectForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var val = els.apiKeyInput.value.trim();
+    if (val) {
+      setStoredKey(val);
+      els.apiKeyInput.value = "";
+      poll();
+    }
+  });
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

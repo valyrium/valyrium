@@ -40,7 +40,8 @@ type Config struct {
 	ResumeSessions   bool
 	ResumeMaxEntries int // bound on the resumable-session LRU (default 32)
 
-	ExposeReasoning bool // if true, relay CLI thinking blocks as reasoning_content
+	ExposeReasoning bool   // if true, relay CLI thinking blocks as reasoning_content
+	UsageDB         string // bbolt usage file; "" = default path, "off" = disabled
 }
 
 type Semaphore struct {
@@ -126,7 +127,7 @@ func NewServer(config Config) *Server {
 	return &Server{
 		config:     config,
 		slots:      NewSemaphore(config.Concurrency),
-		metrics:    NewMetrics(),
+		metrics:    NewMetrics(OpenUsageStore(config.UsageDB)),
 		sessions:   NewSessionManager(config.MaxSessions, config.ToolTimeoutMS, config.SessionIdleMS),
 		resume:     resume,
 		mcpBaseURL: fmt.Sprintf("http://127.0.0.1:%d", config.Port),
@@ -239,10 +240,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	model := s.config.DefaultModel
 	promptTokens := 0
 	completionTokens := 0
+	var costUSD *float64
 
 	defer func() {
 		duration := time.Since(startTime)
 		s.metrics.RecordRequest(r.Method, r.URL.Path, statusCode, duration)
+		s.metrics.usage.RecordUsage(promptTokens, completionTokens, costUSD)
 
 		logEntry := map[string]interface{}{
 			"method":            r.Method,
@@ -297,7 +300,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.slots.Release()
-		statusCode = s.handleToolTurn(w, r, req, contSess, toolResults, id, created, model, effort, &promptTokens, &completionTokens)
+		statusCode = s.handleToolTurn(w, r, req, contSess, toolResults, id, created, model, effort, &promptTokens, &completionTokens, &costUSD)
 		return
 	}
 
@@ -328,7 +331,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer s.slots.Release()
 
 	if req.Stream {
-		s.handleStreamingResponse(w, r, req, plan, id, created, model, effort, systemPrompt, prompt, &promptTokens, &completionTokens)
+		s.handleStreamingResponse(w, r, req, plan, id, created, model, effort, systemPrompt, prompt, &promptTokens, &completionTokens, &costUSD)
 		return
 	}
 
@@ -379,10 +382,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	promptTokens = completion.Usage.InputTokens + completion.Usage.CacheReadInputTokens + completion.Usage.CacheCreationInputTokens
 	completionTokens = completion.Usage.OutputTokens
+	costUSD = completion.CostUSD
 	s.sendJSON(w, 200, CompletionResponseWithCost(id, created, *completion))
 }
 
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, plan resumeTurn, id string, created int64, model, effort, systemPrompt, prompt string, promptTokens, completionTokens *int) {
+func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, plan resumeTurn, id string, created int64, model, effort, systemPrompt, prompt string, promptTokens, completionTokens *int, costUSD **float64) {
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
@@ -438,6 +442,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 
 	*promptTokens = completion.Usage.InputTokens + completion.Usage.CacheReadInputTokens + completion.Usage.CacheCreationInputTokens
 	*completionTokens = completion.Usage.OutputTokens
+	*costUSD = completion.CostUSD
 
 	usage := ToOpenAIUsage(completion.Usage, completion.CostUSD)
 	finish := MapFinishReason(completion.StopReason)
@@ -648,7 +653,7 @@ func (s *Server) collectTurn(ctx context.Context, sess *Session, onDelta func(st
 // session (contSess == nil) or resume a parked one, then respond with
 // either tool_calls or the final completion. Returns the HTTP status for
 // the request log.
-func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, contSess *Session, toolResults []toolResultMessage, id string, created int64, model, effort string, promptTokens, completionTokens *int) int {
+func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, contSess *Session, toolResults []toolResultMessage, id string, created int64, model, effort string, promptTokens, completionTokens *int, costUSD **float64) int {
 	sess := contSess
 
 	if sess == nil {
@@ -691,7 +696,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	}
 
 	if req.Stream {
-		return s.streamToolTurn(w, r, sess, id, created, model, promptTokens, completionTokens)
+		return s.streamToolTurn(w, r, sess, id, created, model, promptTokens, completionTokens, costUSD)
 	}
 
 	outcome := s.collectTurn(r.Context(), sess, nil, nil)
@@ -700,6 +705,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	}
 	*promptTokens = outcome.usage.InputTokens + outcome.usage.CacheReadInputTokens + outcome.usage.CacheCreationInputTokens
 	*completionTokens = outcome.usage.OutputTokens
+	*costUSD = outcome.costUSD
 
 	if outcome.err != nil {
 		s.sessions.ReapSession(sess.ID)
@@ -733,7 +739,7 @@ func (s *Server) handleToolTurn(w http.ResponseWriter, r *http.Request, req Chat
 	return 200
 }
 
-func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Session, id string, created int64, model string, promptTokens, completionTokens *int) int {
+func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Session, id string, created int64, model string, promptTokens, completionTokens *int, costUSD **float64) int {
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
@@ -774,6 +780,7 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 
 	*promptTokens = outcome.usage.InputTokens + outcome.usage.CacheReadInputTokens + outcome.usage.CacheCreationInputTokens
 	*completionTokens = outcome.usage.OutputTokens
+	*costUSD = outcome.costUSD
 	usage := ToOpenAIUsage(outcome.usage, outcome.costUSD)
 
 	if outcome.final {
@@ -805,11 +812,20 @@ func (s *Server) streamToolTurn(w http.ResponseWriter, r *http.Request, sess *Se
 	return 200
 }
 
+// These three handlers only ever return 200, so the recorded status is
+// hardcoded. Without this, llmgateway_requests_total could only ever contain
+// the one route that records itself, POST /v1/chat/completions (ADR 0003).
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { s.metrics.RecordRequest(r.Method, r.URL.Path, 200, time.Since(start)) }()
+
 	s.sendJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { s.metrics.RecordRequest(r.Method, r.URL.Path, 200, time.Since(start)) }()
+
 	var models []ModelInfo
 	for _, id := range s.config.Models {
 		length := resolveContextLength(id, s.config.ContextLengths, s.config.DefaultContextLength)
@@ -830,6 +846,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { s.metrics.RecordRequest(r.Method, r.URL.Path, 200, time.Since(start)) }()
+
 	w.Header().Set("content-type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(200)
 
@@ -838,11 +857,28 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "# HELP llmgateway_live_sessions Number of live tool-calling CLI sessions (active + parked)\n")
 	_, _ = fmt.Fprintf(w, "# TYPE llmgateway_live_sessions gauge\n")
 	_, _ = fmt.Fprintf(w, "llmgateway_live_sessions %d\n", s.sessions.GetSessionCount())
+
+	s.metrics.usage.WritePrometheus(w)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && r.URL.Path == "/healthz" {
 		s.handleHealthz(w, r)
+		return
+	}
+
+	// The dashboard shell and brand mark are static assets carrying no data,
+	// and a plain browser navigation cannot set an Authorization header —
+	// so they sit in the same unauthenticated tier as /healthz. The page's
+	// own fetch() calls to /metrics and /v1/models still carry the key
+	// (ADR 0003).
+	if r.Method == "GET" && r.URL.Path == "/dashboard" {
+		s.handleDashboard(w, r)
+		return
+	}
+
+	if r.Method == "GET" && r.URL.Path == "/logo-mark.svg" {
+		s.handleLogoMark(w, r)
 		return
 	}
 
@@ -940,6 +976,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			}
 		}
 		s.sessions.Close()
+		if cerr := s.metrics.usage.Close(); cerr != nil {
+			log.Printf("warning: failed to close the usage store: %v", cerr)
+		}
 	})
 	return err
 }
