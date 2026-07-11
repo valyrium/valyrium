@@ -27,6 +27,7 @@ type streamJsonLine struct {
 	Subtype      string   `json:"subtype"`
 	IsError      bool     `json:"is_error"`
 	Result       string   `json:"result"`
+	SessionID    string   `json:"session_id"`
 	StopReason   *string  `json:"stop_reason"`
 	TotalCostUSD *float64 `json:"total_cost_usd"`
 	Usage        *Usage   `json:"usage"`
@@ -60,6 +61,13 @@ type RunClaudeOptions struct {
 	TimeoutMs    int
 	Signal       context.Context
 	OnTextDelta  func(string)
+
+	// Persist keeps the CLI's session on disk so a later turn can resume
+	// it; without it the CLI is told to leave no session behind.
+	Persist bool
+	// ResumeSessionID continues an existing CLI session instead of
+	// starting a new one. Only meaningful with Persist.
+	ResumeSessionID string
 }
 
 func RunClaude(opts RunClaudeOptions) (*Completion, error) {
@@ -72,9 +80,15 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 		"--include-partial-messages",
 		"--verbose",
 		"--tools", "",
-		"--no-session-persistence",
 		"--disable-slash-commands",
 		"--system-prompt", opts.SystemPrompt,
+	}
+	if opts.Persist {
+		if opts.ResumeSessionID != "" {
+			args = append(args, "--resume", opts.ResumeSessionID)
+		}
+	} else {
+		args = append(args, "--no-session-persistence")
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
@@ -115,6 +129,7 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 		stopReason   *string
 		costUsd      *float64
 		usage        Usage
+		cliSessionID string
 		sawResult    bool
 		stderrTail   strings.Builder
 		settledOnce  sync.Once
@@ -172,6 +187,12 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 		var parsed streamJsonLine
 		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
 			continue
+		}
+
+		// Every line of a persisted run carries the session id; the "system"
+		// init line is the first to do so.
+		if parsed.SessionID != "" {
+			cliSessionID = parsed.SessionID
 		}
 
 		if parsed.Type == "stream_event" && parsed.Event != nil {
@@ -249,11 +270,12 @@ func RunClaude(opts RunClaudeOptions) (*Completion, error) {
 	}
 
 	completion := &Completion{
-		Text:       text,
-		Model:      model,
-		StopReason: stopReason,
-		Usage:      usage,
-		CostUSD:    costUsd,
+		Text:         text,
+		Model:        model,
+		StopReason:   stopReason,
+		Usage:        usage,
+		CostUSD:      costUsd,
+		CLISessionID: cliSessionID,
 	}
 
 	return finish(completion, nil)
