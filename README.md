@@ -1,6 +1,10 @@
+<img src="docs/design/logo-mark.svg" width="56" height="56" alt="valyrium">
+
 # valyrium
 
-A zero-dependency OpenAI-compatible HTTP gateway that routes requests to the Claude Code CLI (`claude -p`). Any tool built against the OpenAI Chat Completions API can use Claude models with this gateway.
+An OpenAI-compatible HTTP gateway that routes requests to the Claude Code CLI (`claude -p`). Any tool built against the OpenAI Chat Completions API can use Claude models with this gateway. Dependencies are limited to the Go standard library and `golang.org/x/...` packages, plus one named exception (`go.etcd.io/bbolt`, for persisted usage accounting) — no other third-party modules.
+
+A built-in dashboard (`GET /dashboard`) is designed in docs/design/dashboard.html — see docs/adr/0003-embedded-dashboard.md and docs/adr/0004-usage-persistence.md.
 
 ## Install
 
@@ -158,7 +162,7 @@ The server listens for `SIGINT` and `SIGTERM`. On signal, in-flight requests are
 - **internal/gateway/session.go** — tool-calling session table, pending-call correlation, sweeper
 - **internal/gateway/mcpserver.go** — the `/mcp/{sessionId}` JSON-RPC surface (initialize, tools/list, tools/call)
 - **internal/gateway/metrics.go** — Prometheus exposition format writer
-- **go.mod** — no runtime dependencies (stdlib only)
+- **go.mod** — stdlib plus `golang.org/x/...` only, no other third-party dependencies
 
 ## Testing
 
