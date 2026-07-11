@@ -81,13 +81,14 @@ func (s *Semaphore) Release() {
 }
 
 type Server struct {
-	config     Config
-	slots      *Semaphore
-	metrics    *Metrics
-	sessions   *SessionManager
-	mcpBaseURL string
-	listeners  []net.Listener
-	doneCh     chan struct{}
+	config       Config
+	slots        *Semaphore
+	metrics      *Metrics
+	sessions     *SessionManager
+	mcpBaseURL   string
+	listeners    []net.Listener
+	httpServer   *http.Server
+	shutdownOnce sync.Once
 }
 
 func NewServer(config Config) *Server {
@@ -106,7 +107,6 @@ func NewServer(config Config) *Server {
 		metrics:    NewMetrics(),
 		sessions:   NewSessionManager(config.MaxSessions, config.ToolTimeoutMS, config.SessionIdleMS),
 		mcpBaseURL: fmt.Sprintf("http://127.0.0.1:%d", config.Port),
-		doneCh:     make(chan struct{}),
 	}
 }
 
@@ -722,6 +722,7 @@ func (s *Server) ListenAndServe() error {
 		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
 	}
+	s.httpServer = srv
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -730,8 +731,9 @@ func (s *Server) ListenAndServe() error {
 		<-sigChan
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
-		close(s.doneCh)
+		if err := s.Shutdown(ctx); err != nil {
+			log.Printf("shutdown error: %v", err)
+		}
 	}()
 
 	err = srv.Serve(listener)
@@ -742,15 +744,25 @@ func (s *Server) ListenAndServe() error {
 	return nil
 }
 
+// Shutdown stops accepting new connections and reaps every live session so
+// its parked CLI process, MCP goroutine, and Events channel don't outlive
+// the server. Idempotent: safe to call more than once (e.g. from both a
+// signal handler and a caller-driven shutdown).
 func (s *Server) Shutdown(ctx context.Context) error {
-	for _, listener := range s.listeners {
-		listener.Close()
-	}
-	select {
-	case <-s.doneCh:
-	case <-ctx.Done():
-	}
-	return nil
+	var err error
+	s.shutdownOnce.Do(func() {
+		if s.httpServer != nil {
+			err = s.httpServer.Shutdown(ctx)
+		} else {
+			for _, listener := range s.listeners {
+				if cerr := listener.Close(); cerr != nil {
+					err = cerr
+				}
+			}
+		}
+		s.sessions.Close()
+	})
+	return err
 }
 
 func newCompletionID() string {

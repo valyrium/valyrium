@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -406,6 +407,40 @@ func TestMCPRelayStripsToolNamePrefix(t *testing.T) {
 	}
 	if got := second.Choices[0].Message.Content; got != "The weather is sunny, 24C" {
 		t.Errorf("final answer should embed the tool result, got %v", got)
+	}
+}
+
+// TestShutdownReapsParkedSessions pins issue #8: a parked tool-calling
+// session (its CLI process, MCP goroutine, and Events channel) must not
+// outlive a graceful Server.Shutdown.
+func TestShutdownReapsParkedSessions(t *testing.T) {
+	t.Setenv("CLAUDE_STUB_MODE", "relay")
+	server, ts := newRelayServer(t, Config{})
+
+	userMsg := map[string]interface{}{"role": "user", "content": "What's the weather in Nairobi?"}
+	status, first := postChat(t, ts.URL, map[string]interface{}{
+		"model":    "sonnet",
+		"messages": []interface{}{userMsg},
+		"tools":    weatherTools(),
+	})
+	if status != 200 {
+		t.Fatalf("first turn: expected 200, got %d", status)
+	}
+	if first.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("expected finish_reason tool_calls, got %q", first.Choices[0].FinishReason)
+	}
+	if got := server.sessions.GetSessionCount(); got != 1 {
+		t.Fatalf("expected 1 parked session before shutdown, got %d", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if got := server.sessions.GetSessionCount(); got != 0 {
+		t.Errorf("expected Shutdown to reap parked sessions, got %d still live", got)
 	}
 }
 
