@@ -235,11 +235,17 @@ func MapFinishReason(stopReason *string) string {
 	}
 }
 
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
 type OpenAIUsage struct {
-	PromptTokens     int      `json:"prompt_tokens"`
-	CompletionTokens int      `json:"completion_tokens"`
-	TotalTokens      int      `json:"total_tokens"`
-	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	PromptTokens        int                 `json:"prompt_tokens"`
+	CompletionTokens    int                 `json:"completion_tokens"`
+	TotalTokens         int                 `json:"total_tokens"`
+	PromptTokensDetails PromptTokensDetails `json:"prompt_tokens_details"`
+	CostUSD             *float64            `json:"cost_usd,omitempty"`
+	CacheWriteTokens    int                 `json:"cache_write_tokens,omitempty"`
 }
 
 func ToOpenAIUsage(usage Usage, costUSD *float64) OpenAIUsage {
@@ -248,7 +254,11 @@ func ToOpenAIUsage(usage Usage, costUSD *float64) OpenAIUsage {
 		PromptTokens:     promptTokens,
 		CompletionTokens: usage.OutputTokens,
 		TotalTokens:      promptTokens + usage.OutputTokens,
+		PromptTokensDetails: PromptTokensDetails{
+			CachedTokens: usage.CacheReadInputTokens,
+		},
 		CostUSD:          costUSD,
+		CacheWriteTokens: usage.CacheCreationInputTokens,
 	}
 }
 

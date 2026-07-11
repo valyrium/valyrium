@@ -106,7 +106,7 @@ The gateway maps reasoning effort to the CLI's `--effort` flag from either of tw
 
 If both are present, `reasoning_effort` wins. `{"reasoning": {"enabled": false}}` is ignored entirely — no `--effort` flag is passed, regardless of any `effort` value also present in the object — rather than being mapped to the lowest effort level.
 
-Response includes `usage` object with token counts and `cost_usd` (from CLI's accounting):
+Response includes `usage` object with token counts and `cost_usd` (from CLI's accounting). Cache-read tokens are broken out in `prompt_tokens_details.cached_tokens` (spec-standard) while still being folded into `prompt_tokens`; cache-write tokens are reported non-standard via `cache_write_tokens`:
 ```json
 {
   "id": "chatcmpl-...",
@@ -118,6 +118,9 @@ Response includes `usage` object with token counts and `cost_usd` (from CLI's ac
     "prompt_tokens": 10,
     "completion_tokens": 2,
     "total_tokens": 12,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
     "cost_usd": 0.001
   }
 }
