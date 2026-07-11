@@ -89,9 +89,10 @@ other behavior in those handlers changes.
 
 The page is one static file served byte-for-byte; embedding it needs only
 `embed.FS` (standard library) and one `http.ResponseWriter.Write` call. This
-ADR's own scope does not touch the dependency policy in docs/spec.md — the
-one new dependency (`go.etcd.io/bbolt`) belongs to docs/adr/0004, which is a
-separate, already-authorized exception.
+ADR's own scope does not touch the dependency policy in docs/spec.md. The
+usage store the dashboard reads from (docs/adr/0004) does not either — it was
+briefly built on `go.etcd.io/bbolt`, but that exception has since been
+withdrawn and the store rebuilt on the standard library.
 
 ## What implementation must do
 

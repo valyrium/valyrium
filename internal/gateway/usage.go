@@ -8,13 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
-
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
-	usageBucket    = "usage_days"
 	usageDayLayout = "2006-01-02"
 	usageOff       = "off"
 )
@@ -31,16 +29,28 @@ type DayUsage struct {
 	CostUSD      float64 `json:"cost_usd"`
 }
 
-// UsageStore accumulates token/cost usage per local calendar day in a bbolt
-// file so week/month/YTD/all-time totals survive a restart. A nil db means
-// tracking is disabled — either explicitly, or because the file could not be
-// opened. Every method is a no-op in that state: usage tracking is analytics
-// and must never take down the gateway (ADR 0004).
-type UsageStore struct {
-	db *bolt.DB
+// usageFile is the on-disk form: one entry per local calendar day, keyed by
+// the date in usageDayLayout.
+type usageFile struct {
+	Days map[string]DayUsage `json:"days"`
 }
 
-// OpenUsageStore opens the usage database at path. The literal string "off"
+// UsageStore accumulates token/cost usage per local calendar day so
+// week/month/YTD/all-time totals survive a restart. The whole ledger is one
+// entry per day — a few hundred per year — so it is held in memory and
+// rewritten in full on each record; there is no benefit to a keyed database
+// at that size (ADR 0004).
+//
+// A disabled store (path "off", or a file that could not be opened) has a nil
+// days map and every method is a no-op: usage tracking is analytics and must
+// never take down the gateway.
+type UsageStore struct {
+	mu   sync.Mutex
+	path string
+	days map[string]DayUsage
+}
+
+// OpenUsageStore opens the usage ledger at path. The literal string "off"
 // disables tracking; an empty path means the default location. A failure to
 // open is logged and degrades to a disabled store, never an error.
 func OpenUsageStore(path string) *UsageStore {
@@ -56,12 +66,78 @@ func OpenUsageStore(path string) *UsageStore {
 		return &UsageStore{}
 	}
 
-	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	days, err := loadUsageFile(path)
 	if err != nil {
 		log.Printf("warning: usage tracking disabled: %v", err)
 		return &UsageStore{}
 	}
-	return &UsageStore{db: db}
+
+	store := &UsageStore{path: path, days: days}
+	// Write the ledger back out once up front: a store that cannot persist is
+	// worse than no store at all, so find that out at startup rather than on
+	// the first completed request.
+	if err := store.save(); err != nil {
+		log.Printf("warning: usage tracking disabled: %v", err)
+		return &UsageStore{}
+	}
+	return store
+}
+
+// loadUsageFile reads the ledger. A missing file is an empty ledger, not an
+// error — that is simply the first run.
+func loadUsageFile(path string) (map[string]DayUsage, error) {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]DayUsage{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return map[string]DayUsage{}, nil
+	}
+
+	var file usageFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil, fmt.Errorf("usage file %s is not readable: %w", path, err)
+	}
+	if file.Days == nil {
+		file.Days = map[string]DayUsage{}
+	}
+	return file.Days, nil
+}
+
+// save writes the whole ledger to a temp file in the same directory and
+// renames it over the real one. The rename is atomic, so a crash mid-write
+// leaves the previous ledger intact rather than a half-written file. Callers
+// hold u.mu.
+func (u *UsageStore) save() error {
+	encoded, err := json.Marshal(usageFile{Days: u.days})
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(u.path), filepath.Base(u.path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op once the rename succeeds
+
+	if _, err := tmp.Write(encoded); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), u.path)
 }
 
 func defaultUsageDBPath() string {
@@ -73,7 +149,7 @@ func defaultUsageDBPath() string {
 }
 
 func (u *UsageStore) enabled() bool {
-	return u != nil && u.db != nil
+	return u != nil && u.days != nil
 }
 
 // RecordUsage adds one request's tokens and cost to today's running totals.
@@ -95,31 +171,17 @@ func (u *UsageStore) recordUsageOn(day time.Time, inputTokens, outputTokens int,
 		cost = *costUSD
 	}
 
-	err := u.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte(usageBucket))
-		if err != nil {
-			return err
-		}
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
-		key := []byte(day.Format(usageDayLayout))
-		var total DayUsage
-		if existing := bucket.Get(key); existing != nil {
-			if err := json.Unmarshal(existing, &total); err != nil {
-				return err
-			}
-		}
+	key := day.Format(usageDayLayout)
+	total := u.days[key]
+	total.InputTokens += int64(inputTokens)
+	total.OutputTokens += int64(outputTokens)
+	total.CostUSD += cost
+	u.days[key] = total
 
-		total.InputTokens += int64(inputTokens)
-		total.OutputTokens += int64(outputTokens)
-		total.CostUSD += cost
-
-		encoded, err := json.Marshal(total)
-		if err != nil {
-			return err
-		}
-		return bucket.Put(key, encoded)
-	})
-	if err != nil {
+	if err := u.save(); err != nil {
 		log.Printf("warning: failed to record usage: %v", err)
 	}
 }
@@ -158,37 +220,25 @@ func (u *UsageStore) Aggregate(now time.Time) map[string]DayUsage {
 		return totals
 	}
 
-	err := u.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(usageBucket))
-		if bucket == nil {
-			return nil
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	for key, usage := range u.days {
+		day, err := time.ParseInLocation(usageDayLayout, key, now.Location())
+		if err != nil {
+			continue // not a date key; ignore rather than fail the scrape
 		}
 
-		return bucket.ForEach(func(key, value []byte) error {
-			day, err := time.ParseInLocation(usageDayLayout, string(key), now.Location())
-			if err != nil {
-				return nil // not a date key; ignore rather than fail the scrape
+		for period, counts := range periodsFor(day, now) {
+			if !counts {
+				continue
 			}
-			var usage DayUsage
-			if err := json.Unmarshal(value, &usage); err != nil {
-				return nil
-			}
-
-			for period, counts := range periodsFor(day, now) {
-				if !counts {
-					continue
-				}
-				total := totals[period]
-				total.InputTokens += usage.InputTokens
-				total.OutputTokens += usage.OutputTokens
-				total.CostUSD += usage.CostUSD
-				totals[period] = total
-			}
-			return nil
-		})
-	})
-	if err != nil {
-		log.Printf("warning: failed to read usage: %v", err)
+			total := totals[period]
+			total.InputTokens += usage.InputTokens
+			total.OutputTokens += usage.OutputTokens
+			total.CostUSD += usage.CostUSD
+			totals[period] = total
+		}
 	}
 
 	return totals
@@ -229,9 +279,14 @@ func line(w io.Writer, format string, args ...interface{}) {
 	_, _ = fmt.Fprintf(w, format, args...)
 }
 
+// Close flushes the ledger. Every record already writes through to disk, so
+// this only guards against a partial in-memory state going unwritten.
 func (u *UsageStore) Close() error {
 	if !u.enabled() {
 		return nil
 	}
-	return u.db.Close()
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.save()
 }

@@ -41,7 +41,7 @@ type Config struct {
 	ResumeMaxEntries int // bound on the resumable-session LRU (default 32)
 
 	ExposeReasoning bool   // if true, relay CLI thinking blocks as reasoning_content
-	UsageDB         string // bbolt usage file; "" = default path, "off" = disabled
+	UsageDB         string // usage ledger file; "" = default path, "off" = disabled
 }
 
 type Semaphore struct {
