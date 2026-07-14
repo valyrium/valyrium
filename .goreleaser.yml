@@ -41,7 +41,7 @@ brews:
       working_dir var
       log_path var/"log/valyrium.log"
       error_log_path var/"log/valyrium.log"
-      environment_variables PATH: "#{Dir.home}/.local/bin:#{std_service_path_env}"
+      environment_variables PATH: "#{Dir.home}/.local/bin:#{Dir.home}/.claude/local:/opt/homebrew/bin:/usr/local/bin:#{std_service_path_env}"
 
 changelog:
   sort: asc

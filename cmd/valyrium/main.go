@@ -109,13 +109,18 @@ func runServe(args []string) error {
 		exposeReasoning = v
 	}
 
+	claudeBin, err := resolveClaudeBin(envStr("CLAUDE_GATEWAY_BIN", "claude"))
+	if err != nil {
+		return err
+	}
+
 	config := gateway.Config{
 		Port:                 envInt("CLAUDE_GATEWAY_PORT", 8787),
 		Host:                 envStr("CLAUDE_GATEWAY_HOST", "127.0.0.1"),
 		APIKey:               os.Getenv("CLAUDE_GATEWAY_API_KEY"),
 		DefaultModel:         envStr("CLAUDE_GATEWAY_MODEL", "sonnet"),
 		Models:               envList("CLAUDE_GATEWAY_MODELS", "sonnet,opus,haiku"),
-		ClaudeBin:            envStr("CLAUDE_GATEWAY_BIN", "claude"),
+		ClaudeBin:            claudeBin,
 		TimeoutMS:            envInt("CLAUDE_GATEWAY_TIMEOUT_MS", 300000),
 		Concurrency:          envInt("CLAUDE_GATEWAY_CONCURRENCY", 4),
 		MaxSessions:          envInt("CLAUDE_GATEWAY_MAX_SESSIONS", 16),
