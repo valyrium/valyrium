@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/valyrium/valyrium/compare/v1.1.0...v1.2.0) (2026-07-14)
+
+
+### Features
+
+* discover the claude CLI at startup and fail fast if it is missing ([606ca18](https://github.com/valyrium/valyrium/commit/606ca1855c616e73b59c7a3d4d89d5f5e6a882f6))
+
 ## [1.1.0](https://github.com/valyrium/valyrium/compare/v1.0.0...v1.1.0) (2026-07-11)
 
 
