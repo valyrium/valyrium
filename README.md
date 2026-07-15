@@ -76,7 +76,7 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_API_KEY` | *(unset)* | If set, all routes except `/healthz` and `/dashboard` require this key as `Authorization: Bearer <key>` or `x-api-key: <key>` (compared in constant time) |
 | `CLAUDE_GATEWAY_MODEL` | `sonnet` | Default model; also fallback for unrecognized ids |
 | `CLAUDE_GATEWAY_MODELS` | `sonnet,opus,haiku` | Comma-separated ids advertised by `GET /v1/models` and accepted as valid request models |
-| `CLAUDE_GATEWAY_BIN` | `claude` | Path to Claude Code CLI executable |
+| `CLAUDE_GATEWAY_BIN` | `claude` | Claude Code CLI to run. A bare name is resolved at startup (see [Finding the claude CLI](#finding-the-claude-cli)); an absolute path is used as-is |
 | `CLAUDE_GATEWAY_TIMEOUT_MS` | `300000` | Wall-clock limit on the CLI process; per-turn for tool-calling sessions |
 | `CLAUDE_GATEWAY_CONCURRENCY` | `4` | Maximum simultaneous *actively generating* CLI processes; excess requests queue FIFO. Parked tool sessions release their slot |
 | `CLAUDE_GATEWAY_MAX_SESSIONS` | `16` | Maximum live tool-calling sessions (active + parked CLI processes); at the cap, new tool-carrying requests get `429` |
@@ -87,6 +87,28 @@ All configuration is via environment variables, read at startup:
 | `CLAUDE_GATEWAY_RESUME_MAX` | `32` | Maximum resumable conversations held in memory when `CLAUDE_GATEWAY_RESUME` is on |
 | `CLAUDE_GATEWAY_EXPOSE_REASONING` | `false` | If `true`, thinking blocks from the CLI stream are relayed as `reasoning_content` (on the message and on streaming deltas) instead of being dropped |
 | `CLAUDE_GATEWAY_USAGE_DB` | `$HOME/.valyrium/usage.db` | Path to the JSON ledger holding persisted token/cost totals, one entry per calendar day. Set to `off` to disable usage tracking (no file, no usage gauges). If the file cannot be opened, the gateway logs a warning and runs with tracking disabled |
+
+## Finding the claude CLI
+
+The gateway shells out to the Claude Code CLI, so it has to find that binary
+before it can serve a single request. When `CLAUDE_GATEWAY_BIN` is a bare name
+(the default, `claude`), it is resolved once at startup:
+
+1. `PATH` first, exactly as a shell would.
+2. Failing that, these common install locations are probed, in order:
+   `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`.
+
+The first match is used as an absolute path. If `CLAUDE_GATEWAY_BIN` is itself a
+path (contains a `/`), it is taken as-is and only checked for being a runnable
+file.
+
+If the CLI is found nowhere, **the gateway refuses to start** and prints an
+error naming every location it searched and pointing at `CLAUDE_GATEWAY_BIN`.
+This matters most for the launchd/systemd service, which starts with a
+stripped-down `PATH` that usually omits wherever `claude` was installed — the
+failure now surfaces at boot instead of as an opaque spawn error on the first
+chat request while `/healthz` still reports healthy. If your `claude` lives
+somewhere else, set `CLAUDE_GATEWAY_BIN` to its full path.
 
 ## Remote access: tunnel + relay
 
@@ -271,6 +293,7 @@ The server listens for `SIGINT` and `SIGTERM`. On signal, in-flight requests are
 ## Implementation
 
 - **cmd/valyrium/main.go** — entry point, reads config from env, starts server
+- **cmd/valyrium/claudebin.go** — resolves the `claude` CLI at startup (PATH, then common install dirs) and fails fast if it is missing
 - **internal/gateway/server.go** — HTTP routing, auth, concurrency semaphore, streaming, metrics, tool-turn driving
 - **internal/gateway/openai.go** — OpenAI wire format, prompt flattening (incl. cold tool history), usage mapping
 - **internal/gateway/claudecli.go** — subprocess runner, stream-json parsing, lifecycle, session spawning
@@ -289,3 +312,5 @@ go test -run 'TestMCPRelay|TestSequentialDispatchNoDeadlock|TestParallelSessions
 ```
 
 Unit tests cover prompt flattening, model resolution, finish-reason mapping, and usage calculation. Integration tests (TestAPIParity, TestEnhancements) start the server against a stub CLI script and verify all endpoints and enhancements. The relay tests re-exec the test binary as a stub CLI that speaks real MCP over HTTP back to the gateway, covering the two-turn tool round trip, sequential-dispatch deadlock resistance, parallel-session correlation, session lifecycle/reaping, and cold-history flattening.
+
+CI (`.github/workflows/ci.yml`) runs `go vet`, a `gofmt` check, and `go test -race ./...` on every pull request and push to `main`.

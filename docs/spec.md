@@ -42,6 +42,7 @@ Design constraints that shape everything below:
 | File | Responsibility |
 |---|---|
 | `cmd/valyrium/main.go` | Entry point: subcommand dispatch (`serve`, `relay`, `tunnel`), reads config from env |
+| `cmd/valyrium/claudebin.go` | Resolves `CLAUDE_GATEWAY_BIN` to a runnable absolute path at startup (PATH, then common install dirs); fails fast if the CLI is missing |
 | `internal/gateway/server.go` | HTTP routing, auth, concurrency semaphore, SSE framing, tool-turn driving, graceful shutdown |
 | `internal/gateway/openai.go` | OpenAI wire types, message-to-prompt flattening (incl. cold tool history), finish-reason and usage mapping |
 | `internal/gateway/claudecli.go` | Subprocess runner: spawns `claude -p`, parses its `stream-json` output, enforces timeout/abort, session-mode spawning |
@@ -65,7 +66,7 @@ All configuration is via environment variables, read once at startup into a
 | `CLAUDE_GATEWAY_API_KEY` | *(unset)* | If set, every route except `/healthz` requires it as `Authorization: Bearer <key>` or `x-api-key: <key>` |
 | `CLAUDE_GATEWAY_MODEL` | `sonnet` | Default model; also the fallback for unrecognized model ids |
 | `CLAUDE_GATEWAY_MODELS` | `sonnet,opus,haiku` | Comma-separated ids advertised by `GET /v1/models`; also accepted as valid request models |
-| `CLAUDE_GATEWAY_BIN` | `claude` | Path to the Claude Code CLI executable |
+| `CLAUDE_GATEWAY_BIN` | `claude` | Claude Code CLI to run. A bare name is resolved at startup — `PATH` first, then `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin` — to an absolute path; a value containing `/` is used as-is. If it resolves nowhere the process refuses to start, naming every location searched (`cmd/valyrium/claudebin.go`) |
 | `CLAUDE_GATEWAY_TIMEOUT_MS` | `300000` | Wall-clock limit on the CLI process; per-turn for tool-calling sessions |
 | `CLAUDE_GATEWAY_CONCURRENCY` | `4` | Maximum simultaneous *actively generating* CLI processes; excess requests queue FIFO. Parked tool sessions release their slot |
 | `CLAUDE_GATEWAY_MAX_SESSIONS` | `16` | Maximum live tool-calling sessions (active + parked CLI processes); at the cap, new tool-carrying requests get `429` |
@@ -227,6 +228,9 @@ Each stateless call spawns exactly one process:
   --system-prompt <systemPrompt> \
   [--model <model>] [--effort <effort>]
 ```
+
+`<claudeBin>` is the absolute path resolved from `CLAUDE_GATEWAY_BIN` at
+startup (§3), not the raw env value.
 
 A tool-calling session (§9) adds `--strict-mcp-config --mcp-config
 {"mcpServers":{"relay":{"type":"http","url":"<gateway's own /mcp/{sessionId}>"}}}`
