@@ -12,8 +12,9 @@ that matters should be captured here or already committed in the repo.
   the module path, binary name, and CLI are all `valyrium` now).
 - Homebrew tap: `github.com/valyrium/homebrew-tap`, formula at
   `Formula/valyrium.rb`.
-- Current release: `v1.0.0`, published via GitHub Releases with cross-compiled
-  archives for linux/darwin × amd64/arm64 and windows × amd64/arm64.
+- Current release: `v1.2.0`, published via GitHub Releases with cross-compiled
+  archives for linux/darwin × amd64/arm64 and windows × amd64/arm64. The
+  release pipeline is now fully automated end-to-end (see "What's done").
 - Release automation: `release-please` (version PRs + tags) +
   `GoReleaser` (cross-compile, GitHub release, Homebrew formula), wired in
   `.github/workflows/release-please.yml`, `.goreleaser.yml`,
@@ -40,59 +41,59 @@ that matters should be captured here or already committed in the repo.
   chat completion through the actual `claude` CLI to the real Anthropic API.
 - Homebrew formula has a `service do` block (launchd), verified with
   `brew services start` — starts at login, restarts on crash, and its `PATH`
-  is extended with `~/.local/bin` (portably, via `Dir.home` — not hardcoded to
-  any one machine's username) so it can find a user-installed `claude` CLI.
+  is extended (portably, via `Dir.home` — not hardcoded to any one machine's
+  username) with `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, and
+  `/usr/local/bin` so it can find a user-installed `claude` CLI.
+- **Release pipeline fully automated (as of v1.2.0).** The
+  `HOMEBREW_TAP_GITHUB_TOKEN` secret is set on `valyrium/valyrium`, so merging a
+  release-please PR now cuts the tag, publishes the GitHub release, AND pushes
+  the updated Homebrew formula to `valyrium/homebrew-tap` with no manual step.
+  First proven on the v1.2.0 release (the whole Release workflow went green;
+  the tap got its "Brew formula update for valyrium version v1.2.0" commit
+  automatically).
+- **CI test gate on PRs.** `.github/workflows/ci.yml` runs `go vet`, a `gofmt`
+  check, and `go test -race ./...` on every pull request and push to `main`.
+- **`claude` CLI discovery hardened (v1.2.0).** The gateway resolves the
+  `claude` binary at startup — prefers `PATH`, then probes `~/.local/bin`,
+  `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin` — and returns an
+  absolute path. If `claude` is nowhere, it refuses to start with an error
+  naming every location searched and pointing at `CLAUDE_GATEWAY_BIN`, instead
+  of the old failure mode where `/healthz` looked healthy but every chat
+  request failed to spawn. See `cmd/valyrium/claudebin.go`.
 
 ## What's NOT done / needs attention
 
-0. **There's an open release-please PR right now**: #3, "chore(main): release
-   1.1.0", proposing the version bump for the `feat: add launchd service
-   block to the Homebrew formula` commit. It's sitting unmerged — merge it
-   (rebase-and-merge) whenever you want v1.1.0 cut. Merging it will tag
-   `v1.1.0` and trigger the same GoReleaser flow described in point 1 below
-   (GitHub release will succeed; the Homebrew tap push will fail until that
-   secret exists, and needs the same manual follow-up).
+The four items that lived here through v1.1.0 — the open release-please PR, the
+missing `HOMEBREW_TAP_GITHUB_TOKEN` secret, the fragile `claude` discovery, and
+the absent CI gate — are all resolved as of v1.2.0. See "What's done" above.
+What remains:
 
-1. **`HOMEBREW_TAP_GITHUB_TOKEN` secret is not set** on `valyrium/valyrium`.
-   The default `GITHUB_TOKEN` GitHub Actions gives a workflow is scoped to the
-   repo it runs in only — it cannot push to the separate `homebrew-tap` repo.
-   Every future release's CI run will: successfully publish the GitHub
-   release (binaries + checksums), then **fail** at the "homebrew formula"
-   step with a 401 trying to push to `valyrium/homebrew-tap`. This is expected
-   given the current setup, not a regression — I deliberately did not create
-   and store a personal access token as a repo secret without checking with
-   the user first (it would need broader scope than is comfortable to embed
-   in a public repo's CI without an explicit go-ahead).
-   - **To fully automate**: create a fine-grained GitHub PAT scoped to
-     `contents:write` on `valyrium/homebrew-tap` only, add it as the
-     `HOMEBREW_TAP_GITHUB_TOKEN` secret on `valyrium/valyrium`
-     (Settings → Secrets and variables → Actions).
-   - **Until then**: after merging a release-please PR (which cuts the tag),
-     the CI goreleaser job will fail on the tap step. Manually regenerate the
-     formula for the new tag and push it to `homebrew-tap`. The fastest way:
-     clone `valyrium/homebrew-tap`, copy `Formula/valyrium.rb`, bump the
-     `version`/`url`/`sha256` fields to match the new release's assets and
-     `valyrium_<version>_checksums.txt` (download via
-     `gh release download <tag> --repo valyrium/valyrium --pattern
-     "*checksums.txt"`), commit, push. Keep the `service do` block as-is
-     unless deliberately changing it.
+1. **Only `claude` install locations known at build time are probed.** The
+   startup discovery in `cmd/valyrium/claudebin.go` and the formula's service
+   `PATH` cover `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, and
+   `/usr/local/bin`. A user whose `claude` lives elsewhere still needs to set
+   `CLAUDE_GATEWAY_BIN` — but now they get a clear startup error telling them
+   so, rather than silent per-request spawn failures. If a new common install
+   path emerges, add it to `candidateBinDirs()` and to the `service` block's
+   `PATH` in `.goreleaser.yml` (keep the two lists in sync — there's a comment
+   in `claudebin.go` saying as much).
 
-2. **`claude` CLI discoverability in the service is a soft assumption.** The
-   formula's `service` block hardcodes `~/.local/bin` onto `PATH` (portably,
-   per-user via `Dir.home`) because that's where `claude` happened to be
-   installed on the machine this was built/tested on. If a user's `claude` CLI
-   lives somewhere else, the running service will fail every request with a
-   spawn error ("binary not found"), even though `brew install` itself
-   succeeds and `/healthz` still responds. Worth hardening later — e.g.
-   searching a few common install locations, or documenting that
-   `CLAUDE_GATEWAY_BIN` can be overridged via a service env var if this
-   becomes a real support burden.
+2. **The token scope should be spot-checked periodically.**
+   `HOMEBREW_TAP_GITHUB_TOKEN` is a fine-grained PAT and will expire on its
+   configured date; when it does, releases will start failing at the tap-push
+   step again (401), exactly as they did before it was set. If that happens,
+   regenerate the PAT (`contents:write` on `valyrium/homebrew-tap` only) and
+   update the secret. As a stopgap for a single release, the old manual path
+   still works: clone `valyrium/homebrew-tap`, bump `version`/`url`/`sha256` in
+   `Formula/valyrium.rb` to match the new assets (checksums via `gh release
+   download <tag> --repo valyrium/valyrium --pattern "*checksums.txt"`),
+   commit, push.
 
-3. **No CI test/lint gate yet** beyond what `go test ./...` already covers
-   locally — there's no GitHub Actions workflow running the test suite on
-   PRs. The release workflow only runs on push to `main`. Fine for a
-   solo-maintainer repo at this stage, but worth adding before accepting
-   outside contributions.
+3. **No end-to-end / integration coverage of the running service** beyond the
+   unit suite and a manual smoke test — nothing exercises an actual
+   `brew install`ed launchd service driving a real request in CI. Fine for a
+   solo-maintainer repo, but worth considering before accepting outside
+   contributions.
 
 ## Naming decisions (context for "why is it called this")
 
@@ -121,6 +122,11 @@ that matters should be captured here or already committed in the repo.
   valyrium/tap/valyrium && brew services start valyrium/tap/valyrium`.
 - Local git remote is `origin` → `git@github.com:valyrium/valyrium.git` over
   SSH. A new machine needs its own SSH key (or HTTPS + `gh auth login`) with
-  push access to the `valyrium` org before it can push here.
+  push access to the `valyrium` org before it can push here. **On the current
+  machine the SSH key is NOT yet authorized** for the org (`git@github.com`
+  returns `Permission denied (publickey)`); the v1.2.0 work was all pushed over
+  HTTPS (`git push https://github.com/valyrium/valyrium.git main`) as a
+  workaround. Add the key to the GitHub account, or switch `origin` to HTTPS,
+  to make plain `git push`/`git pull` work.
 - `gh` CLI needs to be authenticated with admin rights on the `valyrium` org
   to create repos, manage secrets, merge PRs, etc.
